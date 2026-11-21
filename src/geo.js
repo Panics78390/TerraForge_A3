@@ -423,7 +423,7 @@ export async function fetchOSM(cfg, progress = () => {}) {
   let server = 0;
   // Un morceau : jusqu'à `tries` essais en changeant de serveur, avec une pause qui s'allonge.
   const run = async (q, bbox, label, tries) => {
-    const query = `[out:json][timeout:60];(${q(box(bbox))});out geom;`;
+    const query = `[out:json][timeout:90];(${q(box(bbox))});out geom;`;
     if (osmCache.has(query)) { keep(osmCache.get(query)); return true; }
     for (let attempt = 0; attempt < tries; attempt++) {
       const ctl = new AbortController();
@@ -433,7 +433,7 @@ export async function fetchOSM(cfg, progress = () => {}) {
       const timer = setInterval(() => {
         const sec = Math.round((Date.now() - t0) / 1000);
         progress(`${text}… ${sec} s`);
-        if (sec >= 70) ctl.abort();
+        if (sec >= 100) ctl.abort();
       }, 1000);
       const url = OVERPASS[server % OVERPASS.length];
       try {
@@ -465,17 +465,22 @@ export async function fetchOSM(cfg, progress = () => {}) {
     const task = tasks[t];
     if (!(await run(task.q, task.bbox, `OpenStreetMap ${t + 1}/${tasks.length} : ${task.name}`, 4))) pending.push(task);
   }
-  // 2e passage : les parties refusées, recoupées en quatre morceaux plus légers.
+  // 2e passage : les parties refusées sont recoupées en quatre morceaux plus légers,
+  // et un morceau encore refusé est recoupé à son tour (jusqu'à 64 morceaux par partie).
+  const rescue = async (task, bbox, label, depth) => {
+    if (await run(task.q, bbox, label, depth ? 3 : 2)) return true;
+    if (depth >= 3 || Date.now() > deadline) return false; // on n'insiste pas au-delà de 8 minutes
+    let ok = true;
+    const parts = split(bbox, 2);
+    for (let k = 0; k < parts.length; k++)
+      if (!(await rescue(task, parts[k], `${label} ${k + 1}/4`, depth + 1))) ok = false;
+    return ok;
+  };
   const failed = [];
+  const deadline = Date.now() + 8 * 60000;
   for (const task of pending) {
-    let ok = await run(task.q, task.bbox, `OpenStreetMap, rattrapage : ${task.name}`, 2);
-    if (!ok) {
-      ok = true;
-      const parts = split(task.bbox, 2);
-      for (let k = 0; k < parts.length; k++)
-        if (!(await run(task.q, parts[k], `OpenStreetMap, rattrapage : ${task.name} (morceau ${k + 1}/4)`, 4))) ok = false;
-    }
-    if (!ok) failed.push(task.name);
+    await wait(5000); // laisse souffler les serveurs avant d'insister
+    if (!(await rescue(task, task.bbox, `OpenStreetMap, rattrapage : ${task.name}, morceau`, 0))) failed.push(task.name);
   }
   return { elements, failed };
 }
