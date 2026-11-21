@@ -76,12 +76,17 @@ function readMaterial(r) {
   const stage = () => {
     if (type >= 5) r.u32();
     const tex = r.str();
-    if (type >= 8) r.u32();
+    const tg = type >= 8 ? r.u32() : 0;
     if (type >= 11) r.u8();
-    return tex;
+    return { tex, tg };
   };
   for (let i = 0; i < nStages; i++) m.stages.push(stage());
-  for (let i = 0; i < nTexGens; i++) r.skip(4 + 48);
+  m.texgens = [];
+  for (let i = 0; i < nTexGens; i++) {
+    const src = r.u32(); const f = [];
+    for (let k = 0; k < 12; k++) f.push(r.f32());
+    m.texgens.push({ src, su: f[0], sv: f[4], ou: f[9], ov: f[10] });
+  }
   if (type >= 10) stage();
   return m;
 }
@@ -134,7 +139,7 @@ export function readLod(u8, info, li, dbg) {
   const nMat = r.u32();
   if (nMat > 4096) throw new Error('LOD invalide (matériaux)');
   const materials = []; for (let i = 0; i < nMat; i++) materials.push(readMaterial(r));
-  log('tex', textures, 'mat', materials.map((m) => m.name));
+  log('tex', textures, 'mat', materials.map((m) => [m.name, m.stages.map((x) => x.tg), m.texgens]));
   const is = ver >= 69 ? 4 : 2;
   r.carr(is, ver); r.carr(is, ver); // arêtes
   const nFaces = r.u32(); const faceBytes = r.u32(); r.u16();
@@ -201,7 +206,8 @@ export function readLod(u8, info, li, dbg) {
   };
   const uv0 = readUV();
   const nUV = r.u32();
-  for (let i = 1; i < nUV; i++) readUV();
+  let uv1 = null;
+  for (let i = 1; i < nUV; i++) { const u = readUV(); if (i === 1) uv1 = u; }
   const pts = r.carr(12, ver);
   if (dbg) console.log('normals@', r.p, [...u8.subarray(r.p, r.p + 24)].map((x) => x.toString(16)).join(' '));
   const nrm = r.cond(ver >= 45 ? 4 : 12, ver);
@@ -223,15 +229,19 @@ export function readLod(u8, info, li, dbg) {
     const src = nrm.fill || nrm.data; const ndv = new DataView(src.buffer, src.byteOffset, src.byteLength);
     for (let i = 0; i < n; i++) unpackN(ndv.getUint32(nrm.fill ? 0 : i * 4, true), i * 3);
   }
-  if (uv0.mm) {
-    const src = uv0.c.fill || uv0.c.data; const udv = new DataView(src.buffer, src.byteOffset, src.byteLength);
-    const [u0, v0, u1, v1] = uv0.mm; const su = (u1 - u0) / 65535, sv = (v1 - v0) / 65535;
+  const decodeUV = (set, out) => {
+    if (!set || !set.mm) return;
+    const src = set.c.fill || set.c.data; const udv = new DataView(src.buffer, src.byteOffset, src.byteLength);
+    const [u0, v0, u1, v1] = set.mm; const su = (u1 - u0) / 65535, sv = (v1 - v0) / 65535;
     for (let i = 0; i < n; i++) {
-      const o = uv0.c.fill ? 0 : i * 4;
-      uvs[i * 2] = (udv.getInt16(o, true) + 32767) * su + u0;
-      uvs[i * 2 + 1] = (udv.getInt16(o + 2, true) + 32767) * sv + v0;
+      const o = set.c.fill ? 0 : i * 4;
+      out[i * 2] = (udv.getInt16(o, true) + 32767) * su + u0;
+      out[i * 2 + 1] = (udv.getInt16(o + 2, true) + 32767) * sv + v0;
     }
-  }
+  };
+  decodeUV(uv0, uvs);
+  let uvs1 = null;
+  if (uv1 && uv1.mm && uv1.c.n === n) { uvs1 = new Float32Array(n * 2); decodeUV(uv1, uvs1); }
   // triangles regroupés par section
   const groups = [];
   const index = [];
@@ -246,10 +256,10 @@ export function readLod(u8, info, li, dbg) {
       if (f.length === 5) index.push(f[1], f[4], f[3]);
     }
     const mat = s.mat >= 0 ? materials[s.mat] : null;
-    groups.push({ start, count: index.length - start, texture: s.tex >= 0 ? textures[s.tex] : '', material: mat ? mat.name : '', diffuse: mat ? mat.diffuse : null });
+    groups.push({ start, count: index.length - start, texture: s.tex >= 0 ? textures[s.tex] : '', material: mat ? mat.name : '', diffuse: mat ? mat.diffuse : null, mat });
   }
   for (const v of index) if (v >= n) throw new Error('indice de sommet hors limites');
-  return { positions, normals, uvs, index: n > 65535 ? new Uint32Array(index) : new Uint16Array(index), groups, nFaces, props };
+  return { positions, normals, uvs, uvs1, index: n > 65535 ? new Uint32Array(index) : new Uint16Array(index), groups, nFaces, props };
 }
 
 // Choisit un niveau de détail visuel raisonnable et le lit.

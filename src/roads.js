@@ -20,6 +20,7 @@ export class RoadManager {
     scene.add(this.group);
     this.draft = null; // route en cours de tracé
     this.draftLine = null;
+    this.texFor = null; // (chemin .paa) => THREE.Texture | null, fourni par l'application
   }
 
   type(id) { return this.types.find((t) => t.id === id) || this.types[0]; }
@@ -51,16 +52,19 @@ export class RoadManager {
       if (road.points.length < 2) continue;
       const t = this.type(road.type);
       let acc = byType.get(t);
-      if (!acc) byType.set(t, (acc = { pos: [], idx: [] }));
+      if (!acc) byType.set(t, (acc = { pos: [], idx: [], uv: [] }));
       this.ribbon(road, t, acc);
     }
     for (const [t, acc] of byType) {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute('position', new THREE.Float32BufferAttribute(acc.pos, 3));
+      geo.setAttribute('uv', new THREE.Float32BufferAttribute(acc.uv, 2));
       geo.setIndex(acc.idx);
       geo.computeVertexNormals();
+      const map = t.tex && this.texFor ? this.texFor(t.tex) : null;
       const mat = new THREE.MeshStandardMaterial({
-        color: t.color, roughness: 1, side: THREE.DoubleSide,
+        ...(map ? { map, transparent: true, depthWrite: false } : {}),
+        color: map ? '#ffffff' : t.color, roughness: 1, side: THREE.DoubleSide,
         polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
       });
       this.group.add(new THREE.Mesh(geo, mat));
@@ -69,10 +73,14 @@ export class RoadManager {
 
   ribbon(road, t, acc) {
     const pts = this.sample(road, Math.max(2, this.terrain.cell * 0.75));
-    const { pos, idx } = acc;
+    const { pos, idx, uv } = acc;
     const base = pos.length / 3;
-    const hw = t.width / 2;
+    // Les textures de route d'Arma ont des bords transparents : la bande affichée est un peu plus large.
+    const textured = !!(t.tex && this.texFor && this.texFor(t.tex));
+    const hw = (t.width / 2) * (textured ? 1.3 : 1);
+    let dist = 0;
     for (let k = 0; k < pts.length; k++) {
+      if (k > 0) dist += Math.hypot(pts[k].x - pts[k - 1].x, pts[k].z - pts[k - 1].z);
       const a = pts[Math.max(0, k - 1)], b = pts[Math.min(pts.length - 1, k + 1)];
       const dx = b.x - a.x, dz = b.z - a.z;
       const len = Math.hypot(dx, dz) || 1;
@@ -80,6 +88,7 @@ export class RoadManager {
       for (const s of [-1, 1]) {
         const x = pts[k].x + nx * hw * s, z = pts[k].z + nz * hw * s;
         pos.push(x, this.terrain.heightAt(x, z) + 0.3, z);
+        uv.push(s < 0 ? 0 : 1, dist / (hw * 2));
       }
       if (k > 0) {
         const i = base + k * 2;

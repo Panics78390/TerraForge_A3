@@ -112,6 +112,13 @@ export class A3Source {
     return { models, pbos };
   }
 
+  // Textures de couleur dont le chemin correspond au filtre (ex. textures de route).
+  textures(re, exclude) {
+    const out = [];
+    for (const k of this.files.keys()) if (/_c[ao]\.paa$/.test(k) && re.test(k) && !(exclude && exclude.test(k))) out.push(k);
+    return out.sort();
+  }
+
   resolve(path) {
     if (!path) return null;
     const key = norm(path);

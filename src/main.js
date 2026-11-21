@@ -4,8 +4,9 @@ import { Terrain } from './terrain.js';
 import { DEFAULT_SURFACES } from './surfaces.js';
 import { ObjectManager, DEFAULT_LIBRARY, CATEGORIES, thumbnail, clearThumb, renderThumb } from './objects.js';
 import { A3Source } from './a3source.js';
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { icon } from './icons.js';
-import { loadP3DParts, disposeParts, guessCategory } from './a3models.js';
+import { loadP3DParts, disposeParts, guessCategory, loadTexture } from './a3models.js';
 import { RoadManager } from './roads.js';
 import { buildExportZip, parseASC, canvasToJPEG } from './exporters.js';
 import { saveProject, loadProject } from './project.js';
@@ -181,6 +182,57 @@ let lastFrame = performance.now();
 let lastObjRefresh = 0;
 let dirtyProject = false;
 
+// ---------- Gizmo de transformation (déplacer / tourner / échelle) ----------
+const gizmoProxy = new THREE.Object3D();
+scene.add(gizmoProxy);
+const gizmo = new TransformControls(camera, renderer.domElement);
+gizmo.setSize(0.9);
+scene.add(gizmo.getHelper());
+let gizmoMode = 'translate';
+function setGizmoMode(m) {
+  gizmoMode = m;
+  gizmo.setMode(m);
+  gizmo.showX = gizmo.showZ = m !== 'rotate'; // rotation autour de la verticale uniquement
+  gizmo.showY = true;
+  if (state.tool === 'select') renderPanel();
+}
+function syncGizmo() {
+  const o = state.tool === 'select' ? objects.selected : null;
+  if (!o) { if (gizmo.object) gizmo.detach(); return; }
+  if (gizmo.dragging) return;
+  gizmoProxy.position.set(o.x, terrain.heightAt(o.x, o.z) + (o.dy || 0), o.z);
+  gizmoProxy.rotation.set(0, o.rot, 0);
+  gizmoProxy.scale.setScalar(o.scale);
+  if (gizmo.object !== gizmoProxy) gizmo.attach(gizmoProxy);
+}
+let gizmoStartScale = 1;
+gizmo.addEventListener('dragging-changed', (e) => {
+  controls.enabled = !e.value;
+  if (e.value) { pushUndo('o'); gizmoStartScale = objects.selected?.scale || 1; }
+  else { syncGizmo(); if (state.tool === 'select') renderPanel(); updateInfo(); }
+});
+gizmo.addEventListener('objectChange', () => {
+  const o = objects.selected;
+  if (!o) return;
+  const p = gizmoProxy.position;
+  if (gizmoMode === 'translate') {
+    const lim = terrain.size;
+    p.x = Math.min(lim, Math.max(0, p.x)); p.z = Math.min(lim, Math.max(0, p.z));
+    if (gizmo.axis === 'Y') o.dy = Math.round((p.y - terrain.heightAt(o.x, o.z)) * 100) / 100;
+    else { objects.move(o, p.x, p.z); p.y = terrain.heightAt(p.x, p.z) + (o.dy || 0); }
+  } else if (gizmoMode === 'rotate') {
+    // angle autour de Y, robuste aux retournements d'Euler
+    const d = new THREE.Vector3(1, 0, 0).applyQuaternion(gizmoProxy.quaternion);
+    o.rot = Math.atan2(-d.z, d.x);
+  } else {
+    const sc = gizmoProxy.scale, base = gizmoStartScale;
+    let v = sc.x;
+    for (const c of [sc.y, sc.z]) if (Math.abs(c - base) > Math.abs(v - base)) v = c;
+    o.scale = Math.min(10, Math.max(0.1, Math.abs(v)));
+  }
+  objects.markDirty(o.lib);
+});
+
 function updateHover(e) {
   const r = renderer.domElement.getBoundingClientRect();
   mouse.x = ((e.clientX - r.left) / r.width) * 2 - 1;
@@ -222,10 +274,12 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
     return;
   }
   if (state.tool === 'select') {
+    if (gizmo.axis) return; // clic sur une poignée du gizmo
     const o = objects.pick(hover.x, hover.z, Math.max(6, state.settings.radius * 0.15));
     objects.select(o);
     renderPanel();
-    if (o) { pushUndo('o'); dragObj = o; }
+    syncGizmo();
+    if (o && e.altKey) { pushUndo('o'); dragObj = o; } // Alt + glisser : déplacement libre sur le sol
     return;
   }
   if (tool?.undo) pushUndo(tool.undo);
@@ -280,7 +334,10 @@ window.addEventListener('keydown', (e) => {
   const sel = objects.selected;
   if (state.tool === 'select' && sel) {
     if (k === 'delete' || k === 'backspace') { pushUndo('o'); objects.remove([sel]); renderPanel(); updateInfo(); }
-    if (k === 'r') { sel.rot += (e.shiftKey ? -1 : 1) * Math.PI / 12; objects.markDirty(sel.lib); }
+    if (k === 'w' || k === 'g') setGizmoMode('translate');
+    if (k === 'e') setGizmoMode('rotate');
+    if (k === 'r') setGizmoMode('scale');
+    if (k === 'q') { sel.rot += (e.shiftKey ? -1 : 1) * Math.PI / 12; objects.markDirty(sel.lib); }
     if (k === '+' || k === '=') { sel.scale = Math.min(5, sel.scale * 1.1); objects.markDirty(sel.lib); }
     if (k === '-') { sel.scale = Math.max(0.2, sel.scale / 1.1); objects.markDirty(sel.lib); }
   }
@@ -413,6 +470,7 @@ function loop() {
   const dt = Math.min(0.05, (now - lastFrame) / 1000);
   lastFrame = now;
   applyTool(dt);
+  syncGizmo();
   objects.flush();
   updateCursor();
   controls.update();
@@ -560,7 +618,14 @@ function renderPanel() {
       libraryTools();
       break;
     case 'select': {
-      panelBody.append(note('Clique un objet pour le sélectionner, fais-le glisser pour le déplacer.<br><b>R</b> / <b>Maj+R</b> : tourner · <b>+</b> / <b>-</b> : taille · <b>Suppr</b> : supprimer.'));
+      panelBody.append(note('Clique un objet pour le sélectionner, puis utilise les <b>poignées</b> affichées dessus.<br><b>W</b> déplacer · <b>E</b> tourner · <b>R</b> échelle · <b>Suppr</b> supprimer · <b>Alt + glisser</b> : déplacement libre.'));
+      const modes = document.createElement('div');
+      modes.className = 'seg';
+      for (const [m, label, ic] of [['translate', 'Déplacer', 'nav'], ['rotate', 'Tourner', 'rotate'], ['scale', 'Échelle', 'scale']]) {
+        const b = btn(icon(ic, 14) + label, () => setGizmoMode(m), gizmoMode === m ? 'active' : '');
+        modes.append(b);
+      }
+      panelBody.append(modes);
       const o = objects.selected;
       if (o) {
         const e = objects.entry(o.lib);
@@ -583,6 +648,7 @@ function renderPanel() {
         if (roads.draft) roads.draft.type = toolSettings.roadType;
       };
       panelBody.append(sel);
+      roadTypeEditor();
       panelBody.append(btn('Terminer la route', finishRoad));
       panelBody.append(h3(`Routes (${roads.roads.length})`));
       const list = document.createElement('div');
@@ -608,6 +674,67 @@ function renderPanel() {
       break;
     }
   }
+}
+
+// Réglages du type de route choisi : nom, largeur, texture (du jeu ou d'un mod chargé).
+const ROAD_TEX = /road|path|highway|runway|track|street|asphalt|asf|pavement|silnice|cesta/;
+const ROAD_TEX_NOT = /_end_|decal|light|sign|\\ui\\|damage|wreck/;
+function roadTypeEditor() {
+  const t = roads.type(toolSettings.roadType);
+  if (!t) return;
+  panelBody.append(h3('Type de route'));
+  const nm = document.createElement('div'); nm.className = 'row';
+  nm.innerHTML = `<label>Nom</label><input type="text" value="${esc(t.name)}">`;
+  nm.querySelector('input').onchange = (e) => { t.name = e.target.value || t.name; dirtyProject = true; renderPanel(); };
+  const wd = document.createElement('div'); wd.className = 'row';
+  wd.innerHTML = `<label>Largeur (m)</label><input type="number" min="1" max="60" step="0.5" value="${t.width}">`;
+  wd.querySelector('input').onchange = (e) => { t.width = Math.min(60, Math.max(1, +e.target.value || t.width)); dirtyProject = true; roads.rebuild(); renderPanel(); };
+  panelBody.append(nm, wd);
+  const list = a3.count ? a3.textures(ROAD_TEX, ROAD_TEX_NOT) : [];
+  if (t.tex && !list.includes(t.tex)) list.unshift(t.tex);
+  const tx = document.createElement('div'); tx.className = 'row';
+  const short = (k) => k.split('\\').slice(-1)[0].replace(/_c[ao]\.paa$/, '') + '  (' + k.split('\\').slice(0, 2).join('\\') + ')';
+  tx.innerHTML = `<label>Texture</label><select><option value="">Couleur unie</option>${list.map((k) => `<option value="${esc(k)}" ${k === t.tex ? 'selected' : ''}>${esc(short(k))}</option>`).join('')}</select>`;
+  tx.querySelector('select').onchange = (e) => { t.tex = e.target.value || undefined; dirtyProject = true; roads.rebuild(); renderPanel(); };
+  panelBody.append(tx);
+  if (t.tex) panelBody.append(note(`<code>${esc(t.tex)}</code><br>Cette texture est écrite dans RoadsLib.cfg à l'export.`));
+  else if (!a3.count) panelBody.append(note('Pour choisir une vraie texture de route, charge d\'abord tes fichiers avec <b>Modèles Arma 3</b> (par ex. <code>roads_f.pbo</code> ou les .pbo d\'un mod).'));
+  else if (!list.length) panelBody.append(note('Aucune texture de route trouvée dans les fichiers chargés. Ajoute <code>roads_f.pbo</code> ou les .pbo de ton mod.'));
+  panelBody.append(btn('+ Nouveau type de route', () => {
+    const id = Math.max(0, ...roads.types.map((x) => x.id)) + 1;
+    roads.types.push({ ...t, id, name: t.name + ' (copie)' });
+    toolSettings.roadType = id;
+    if (roads.draft) roads.draft.type = id;
+    dirtyProject = true;
+    renderPanel();
+  }, 'small'));
+}
+
+// Textures de route : chargées à la demande, puis les routes sont redessinées.
+const roadTex = new Map();
+roads.texFor = (path) => {
+  if (roadTex.has(path)) return roadTex.get(path);
+  roadTex.set(path, null);
+  if (a3.resolve(path)) loadTexture(a3, path, 1024).then((r) => {
+    if (!r) return;
+    r.tex.anisotropy = 8;
+    roadTex.set(path, r.tex);
+    roads.rebuild();
+  });
+  return null;
+};
+// Textures du jeu proposées par défaut pour les types de départ.
+const ROAD_DEFAULT_TEX = {
+  1: 'a3\\roads_f\\roads_ae\\data\\surf_roadtarmac_main_road_ca.paa',
+  2: 'a3\\roads_f\\roads_new\\data\\road_ca.paa',
+  3: 'a3\\roads_f\\roads_ae\\data\\surf_roaddirt_road_ca.paa',
+  4: 'a3\\roads_f\\roads_ae\\data\\surf_roadconcrete_city_road_ca.paa',
+  5: 'a3\\roads_f\\roads_ae\\data\\surf_roaddirt_path_ca.paa',
+};
+function refreshRoadTextures() {
+  for (const t of roads.types) if (!t.tex && ROAD_DEFAULT_TEX[t.id] && a3.resolve(ROAD_DEFAULT_TEX[t.id])) t.tex = ROAD_DEFAULT_TEX[t.id];
+  for (const [k, v] of roadTex) if (!v) roadTex.delete(k); // nouvelles sources : on retente
+  roads.rebuild();
 }
 
 function libraryTools() {
@@ -786,12 +913,15 @@ async function connectA3(files) {
       await tick();
     }
   });
+  if (res) refreshRoadTextures();
   if (!res || !res.models) {
     alertDialog('Aucun modèle trouvé', 'Aucun fichier .p3d n\'a été trouvé dans ce que tu as choisi. Choisis des fichiers .pbo du jeu (dossier Addons), un dossier de mod, ou un dossier contenant des .p3d. Les fichiers .ebo (contenu chiffré de certains DLC) ne peuvent pas être lus.');
     return;
   }
+  refreshRoadTextures();
   assetUI.view = 'a3';
   renderAssets();
+  renderPanel();
   toast(`${res.models} modèles Arma 3 trouvés${upgraded ? `, ${upgraded} objets du catalogue remplacés par le vrai modèle` : ''}`, 4000);
 }
 

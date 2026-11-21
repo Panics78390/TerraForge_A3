@@ -219,7 +219,10 @@ export function roadsLibCfg(types, tag) {
   let s = '// Généré par TerraForge. Adapte les textures/matériaux à ton mod.\nclass RoadTypesLibrary\n{\n';
   for (const t of types) {
     const n = String(t.id).padStart(4, '0');
-    s += `\tclass Road${n}\n\t{\n\t\twidth = ${t.width};\n\t\tmainStrTex = "${tag}\\data\\roads\\road${n}_co.paa";\n\t\tmainTerTex = "${tag}\\data\\roads\\road${n}_end_co.paa";\n\t\tmainMat = "${tag}\\data\\roads\\road${n}.rvmat";\n\t\tmap = "${t.map}";\n\t\tAIpathOffset = ${Math.max(1, Math.round(t.width / 4))};\n\t\torder = ${t.id};\n\t};\n`;
+    const str = t.tex || `${tag}\\data\\roads\\road${n}_co.paa`;
+    const ter = t.tex ? t.tex.replace(/_(ca|co)\.paa$/i, '_end_$1.paa') : `${tag}\\data\\roads\\road${n}_end_co.paa`;
+    const mat = t.tex ? t.tex.replace(/_(ca|co)\.paa$/i, '.rvmat') : `${tag}\\data\\roads\\road${n}.rvmat`;
+    s += `\tclass Road${n}\n\t{\n\t\twidth = ${t.width};\n\t\tmainStrTex = "${str}";\n\t\tmainTerTex = "${ter}";\n\t\tmainMat = "${mat}";\n\t\tmap = "${t.map}";\n\t\tAIpathOffset = ${Math.max(1, Math.round(t.width / 4))};\n\t\torder = ${t.id};\n\t};\n`;
   }
   return s + '};\n';
 }
