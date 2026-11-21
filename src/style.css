@@ -151,7 +151,7 @@ input.switch:checked::after { left: 18px; }
 
 /* ---------- Catalogue d'objets (bas de l'écran) ---------- */
 #assets { grid-area: assets; background: var(--panel); border-top: 1px solid var(--line); display: flex; flex-direction: column; height: 214px; min-width: 0; }
-#assets.closed { height: 34px; }
+#assets.closed { height: 34px !important; }
 #assets.closed .as-grid, #assets.closed .as-hint { display: none; }
 .as-bar { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-bottom: 1px solid var(--line); flex-wrap: nowrap; overflow: hidden; }
 .as-bar b { white-space: nowrap; }
@@ -194,3 +194,8 @@ button:has(> .ic) { display: inline-flex; align-items: center; justify-content: 
 #topbar { gap: 6px; }
 @media (max-width: 1450px) { #topbar button { padding-left: 8px; padding-right: 8px; font-size: 12px; } }
 .wz-chips button:has(> .ic) { flex-direction: column; gap: 4px; }
+#assets { position: relative; }
+.as-grip { position: absolute; left: 0; right: 0; top: -4px; height: 9px; cursor: ns-resize; z-index: 5; }
+.as-grip::after { content: ''; position: absolute; left: 50%; top: 3px; width: 46px; height: 3px; margin-left: -23px; border-radius: 2px; background: var(--line); transition: background .15s; }
+.as-grip:hover::after { background: var(--accent); }
+#assets.closed .as-grip { display: none; }

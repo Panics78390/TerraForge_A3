@@ -837,6 +837,34 @@ assetsEl.innerHTML = `
   </div>
   <div class="as-grid"></div>`;
 const asGrid = assetsEl.querySelector('.as-grid');
+// Poignée de redimensionnement : tirer le bord haut du catalogue (double-clic : taille par défaut).
+{
+  const grip = document.createElement('div');
+  grip.className = 'as-grip';
+  grip.title = 'Tirer pour agrandir ou réduire le catalogue (double-clic : taille par défaut)';
+  assetsEl.prepend(grip);
+  const apply = (h) => {
+    const max = Math.max(160, window.innerHeight - 220);
+    assetsEl.style.height = Math.round(Math.min(max, Math.max(120, h))) + 'px';
+    resize();
+  };
+  try { const saved = +localStorage.getItem('tf-assets-h'); if (saved) assetsEl.style.height = saved + 'px'; } catch (e) { /* stockage indisponible */ }
+  grip.addEventListener('pointerdown', (e) => {
+    if (!assetUI.open) return;
+    e.preventDefault();
+    grip.setPointerCapture(e.pointerId);
+    const y0 = e.clientY, h0 = assetsEl.getBoundingClientRect().height;
+    const move = (ev) => apply(h0 + (y0 - ev.clientY));
+    const up = () => {
+      grip.removeEventListener('pointermove', move);
+      grip.removeEventListener('pointerup', up);
+      try { localStorage.setItem('tf-assets-h', parseInt(assetsEl.style.height, 10)); } catch (e2) { /* ignoré */ }
+    };
+    grip.addEventListener('pointermove', move);
+    grip.addEventListener('pointerup', up);
+  });
+  grip.addEventListener('dblclick', () => { assetsEl.style.height = ''; try { localStorage.removeItem('tf-assets-h'); } catch (e) { /* ignoré */ } resize(); });
+}
 assetsEl.querySelector('[data-k=filter]').oninput = (e) => { assetUI.filter = e.target.value.toLowerCase(); renderAssets(); };
 assetsEl.querySelector('[data-k=cat]').onchange = (e) => { if (assetUI.view === 'a3') assetUI.group = e.target.value; else assetUI.cat = e.target.value; renderAssets(); };
 assetsEl.querySelector('[data-k=view]').onchange = (e) => { assetUI.view = e.target.value; renderAssets(); };
