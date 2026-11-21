@@ -1,4 +1,6 @@
 import { zipSync, strToU8 } from 'fflate';
+// Réglages et classes de clutter de Stratis : pboProject refuse un monde qui ne les déclare pas lui-même.
+import clutterStratis from './clutter_stratis.txt?raw';
 
 // Décalage de la grille Terrain Builder (Mapframe : easting par défaut 200000).
 export const DEFAULT_OFFSET = { east: 200000, north: 0 };
@@ -291,7 +293,7 @@ export function roadsLibCfg(types, tag) {
 // ---------- config.cpp ----------
 export function configCpp(name, T, author, geo) {
   const half = Math.round(T.size / 2);
-  return `// Généré par TerraForge : base de configuration à compléter.
+  return `// Genere par TerraForge : base de configuration a completer.
 class CfgPatches
 {
 	class ${name}
@@ -322,7 +324,7 @@ class CfgWorlds
 		mapSize = ${T.size};
 		mapZone = 35;
 		longitude = ${geo ? geo.lon.toFixed(3) : 25};
-		latitude = ${geo ? (-geo.lat).toFixed(3) : -40}; // négatif = hémisphère nord
+		latitude = ${geo ? (-geo.lat).toFixed(3) : -40}; // negatif = hemisphere nord
 		elevationOffset = 0;
 		startTime = "12:00";
 		startDate = "15/6/2035";
@@ -333,6 +335,7 @@ class CfgWorlds
 		ilsTaxiOff[] = {};
 		class SecondaryAirports {};
 		class Names {};
+${clutterStratis.replace(/\s+$/, '')}
 	};
 };
 `;
