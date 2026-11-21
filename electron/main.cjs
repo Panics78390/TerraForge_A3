@@ -9,10 +9,19 @@ function createWindow() {
     title: 'TerraForge',
     icon: path.join(__dirname, '..', 'build', 'icon.png'),
     autoHideMenuBar: true,
+    show: false,
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
   });
   Menu.setApplicationMenu(null);
-  win.maximize();
+  // Écran de démarrage : le logo, le temps que l'éditeur se charge.
+  const splash = new BrowserWindow({ width: 720, height: 480, frame: false, resizable: false, center: true, alwaysOnTop: true, skipTaskbar: true, backgroundColor: '#0b0c0e', icon: path.join(__dirname, '..', 'build', 'icon.png') });
+  splash.loadFile(path.join(__dirname, 'splash.html'));
+  const started = Date.now();
+  win.once('ready-to-show', () => setTimeout(() => {
+    win.maximize();
+    win.show();
+    if (!splash.isDestroyed()) splash.close();
+  }, Math.max(0, 1800 - (Date.now() - started))));
   win.loadFile(path.join(__dirname, '..', 'dist-single', 'index.html'));
 
   // Liens externes (aide, crédits) : dans le navigateur, pas dans l'application.

@@ -210,3 +210,4 @@ button:has(> .ic) { display: inline-flex; align-items: center; justify-content: 
 #st-speed { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
 #st-speed input { width: 90px; }
 #st-speed b { min-width: 34px; }
+.help-logo { display: block; width: 100%; max-width: 460px; margin: 0 auto 10px; border-radius: 8px; }

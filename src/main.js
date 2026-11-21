@@ -9,6 +9,7 @@ import { icon } from './icons.js';
 import { loadP3DParts, disposeParts, guessCategory, loadTexture } from './a3models.js';
 import { RoadManager } from './roads.js';
 import { buildExportZip, parseASC, canvasToJPEG } from './exporters.js';
+import logoUrl from './logo.jpg?inline';
 import { readTv4p, parseLayersCfg, readASCFile, baseName } from './tv4p.js';
 import { saveProject, loadProject } from './project.js';
 import { mulberry32, makeNoise } from './noise.js';
@@ -1883,6 +1884,7 @@ async function doExport() {
 
 function doHelp() {
   alertDialog('Aide TerraForge', `
+  <img class="help-logo" src="${logoUrl}" alt="TerraForge">
   <ul>
     <li><b>Vue</b> : clic droit pour tourner, clic molette pour déplacer, molette pour zoomer.</li>
     <li><b>Touches 1 à 9, 0</b> : changer d'outil. <b>[ ]</b> : taille du pinceau. <b>Ctrl+Z / Ctrl+Y</b> : annuler / rétablir. <b>Ctrl+S</b> : enregistrer.</li>

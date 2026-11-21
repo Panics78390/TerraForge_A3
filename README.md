@@ -1,3 +1,5 @@
+<p align="center"><img src="build/logo.png" alt="TerraForge" width="640"></p>
+
 # TerraForge
 
 Éditeur de terrain simplifié pour Arma 3. On voit la carte en 3D en direct, on la modifie au pinceau, puis on exporte des fichiers prêts à importer dans Terrain Builder.
@@ -67,3 +69,7 @@ npm run build:single   # un seul fichier dist-single/index.html, à ouvrir par d
 ## Ouvrir un projet Terrain Builder (.tv4p)
 
 « Ouvrir projet » accepte aussi les fichiers `.tv4p`. TerraForge y lit la taille de la carte et les chemins du relief (`.asc`), de l'image satellite, du masque et de `layers.cfg`, puis demande le dossier qui contient ces fichiers (par ex. `P:\macarte\source`). Les objets des calques (`.tv4l`) ne sont pas encore lus. Le projet Terrain Builder n'est jamais modifié.
+
+## Application Windows
+
+Le logiciel Windows (installation ou version portable) se télécharge dans l'onglet **Releases** du dépôt. Il est fabriqué par le workflow « Application Windows » (`.github/workflows/windows.yml`), à lancer depuis l'onglet Actions. En local : `npm run app` pour le lancer, `npm run dist:win` pour fabriquer le `.exe`.
