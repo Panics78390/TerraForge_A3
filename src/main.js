@@ -885,13 +885,16 @@ assetsEl.querySelector('[data-a=a3]').onclick = () => a3Dialog();
 // ---------- Source des vrais modèles Arma 3 ----------
 const a3 = new A3Source();
 const a3Thumbs = new Map(); // key -> dataURL ('' = illisible)
+const a3Errors = new Map(); // key -> raison de l'échec de lecture
 const A3_MAX_CARDS = 400;
 objects.p3dLoader = async (entry) => {
   if (!a3.count) return null;
   const key = (entry.p3d && a3.resolve(entry.p3d)) || a3.byName.get((entry.tbName || '').toLowerCase());
   if (!key) return null;
-  const r = await loadP3DParts(a3, key);
-  return { ...r, key };
+  try {
+    const r = await loadP3DParts(a3, key);
+    return { ...r, key };
+  } catch (err) { a3Errors.set(key, err.message || String(err)); throw err; }
 };
 
 function pickMany(dir) {
@@ -969,11 +972,11 @@ async function a3Pump() {
         const r = await loadP3DParts(a3, key, { maxFaces: 6000, texSize: 128 });
         a3Thumbs.set(key, renderThumb(r.parts));
         disposeParts(r.parts);
-      } catch (err) { console.warn('Modèle illisible :', key, err.message); a3Thumbs.set(key, ''); }
+      } catch (err) { console.warn('Modèle illisible :', key, err); a3Thumbs.set(key, ''); a3Errors.set(key, err.message || String(err)); }
       await new Promise((r) => setTimeout(r, 0));
     }
     const url = a3Thumbs.get(key);
-    if (url) img.src = url; else img.closest('.as-card')?.classList.add('bad');
+    if (url) img.src = url; else { const c = img.closest('.as-card'); if (c) { c.classList.add('bad'); c.title += '\nLecture impossible : ' + (a3Errors.get(key) || 'erreur inconnue'); } }
   }
   a3Busy = false;
 }
@@ -989,7 +992,7 @@ async function useA3Model(m) {
   let e = objects.library.find((x) => x.p3d === m.key) || objects.library.find((x) => !x.modelData && (x.tbName || '').toLowerCase() === m.name.toLowerCase());
   if (!e) {
     e = await objects.addLibraryEntry({ id: 'a3_' + Date.now().toString(36) + Math.floor(Math.random() * 1e4), name: m.name, tbName: m.name, cat: guessCategory(m.key), p3d: m.key });
-    if (e._missing) { toast('Ce modèle n\'a pas pu être lu'); }
+    if (e._missing) alertDialog('Modèle illisible', `TerraForge n'a pas réussi à lire <b>${esc(m.name)}</b>, il est donc affiché sous forme de cube (il sera quand même exporté sous son nom).<br><br>Raison technique : <code>${esc(a3Errors.get(m.key) || 'inconnue')}</code><br><span class="note">Chemin : ${esc(m.key)}</span>`);
   }
   toolSettings.placeLib = e.id;
   setTool('place');
