@@ -147,3 +147,4 @@ input.switch:checked::after { left: 18px; }
 .geo-side .row label { flex-basis: 120px; }
 .geo-opt { border: 1px solid var(--line); border-radius: 6px; margin: 4px 0; background: var(--panel2); }
 .leaflet-container { font: inherit; }
+.leaflet-control-layers { background: var(--panel); color: var(--text); border: 1px solid var(--line) !important; }

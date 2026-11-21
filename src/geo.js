@@ -38,7 +38,16 @@ export function openGeoDialog() {
     const size = () => cfg.grid * cfg.cell;
 
     const map = L.map(root.querySelector('#geo-leaflet'), { zoomControl: true }).setView([cfg.lat, cfg.lon], 12);
-    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© contributeurs OpenStreetMap' }).addTo(map);
+    // Fond de carte : plan CARTO (données OpenStreetMap). S'il est refusé ou hors
+    // ligne, on bascule sur un fond « relief » dessiné à partir des tuiles d'altitude.
+    const plan = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+      maxZoom: 19, subdomains: 'abcd', attribution: '© contributeurs OpenStreetMap © CARTO',
+    });
+    const relief = reliefLayer();
+    let errors = 0;
+    plan.on('tileerror', () => { if (++errors === 3 && map.hasLayer(plan)) { map.removeLayer(plan); relief.addTo(map); } });
+    plan.addTo(map);
+    L.control.layers({ 'Plan': plan, 'Relief': relief }, null, { collapsed: false, position: 'topright' }).addTo(map);
     const rect = L.rectangle(boundsOf(cfg.lat, cfg.lon, size()), { color: '#d9a441', weight: 2, fillOpacity: 0.18, interactive: false }).addTo(map);
     const syncRect = () => {
       const c = map.getCenter();
@@ -131,6 +140,46 @@ export function openGeoDialog() {
     render();
     map.fitBounds(rect.getBounds().pad(0.3));
   });
+}
+
+// Fond de carte de secours : relief ombré calculé depuis les tuiles d'altitude.
+function reliefLayer() {
+  const Layer = L.GridLayer.extend({
+    createTile(coords, done) {
+      const c = document.createElement('canvas');
+      c.width = c.height = 256;
+      const max = 2 ** coords.z;
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => {
+        const ctx = c.getContext('2d');
+        ctx.drawImage(img, 0, 0);
+        const im = ctx.getImageData(0, 0, 256, 256), d = im.data;
+        const h = new Float32Array(65536);
+        for (let k = 0; k < 65536; k++) h[k] = d[k * 4] * 256 + d[k * 4 + 1] + d[k * 4 + 2] / 256 - 32768;
+        const res = 156543 / max; // m/px approximatif
+        for (let y = 0; y < 256; y++) for (let x = 0; x < 256; x++) {
+          const k = y * 256 + x, e = h[k];
+          const dx = h[y * 256 + Math.min(255, x + 1)] - h[y * 256 + Math.max(0, x - 1)];
+          const dy = h[Math.min(255, y + 1) * 256 + x] - h[Math.max(0, y - 1) * 256 + x];
+          const sh = Math.max(0.45, Math.min(1.35, 1 - ((dx + dy) / res) * 1.4));
+          let r, g, b;
+          if (e <= 0) { r = 70; g = 120; b = 160; }
+          else {
+            const t = Math.min(1, e / 2500);
+            r = 120 + 110 * t; g = 150 + 50 * t - 40 * t * t; b = 95 + 100 * t * t;
+          }
+          d[k * 4] = r * (e <= 0 ? 1 : sh); d[k * 4 + 1] = g * (e <= 0 ? 1 : sh); d[k * 4 + 2] = b * (e <= 0 ? 1 : sh); d[k * 4 + 3] = 255;
+        }
+        ctx.putImageData(im, 0, 0);
+        done(null, c);
+      };
+      img.onerror = () => done(new Error('tuile'), c);
+      img.src = ELEV_URL(coords.z, ((coords.x % max) + max) % max, coords.y);
+      return c;
+    },
+  });
+  return new Layer({ maxNativeZoom: 14, maxZoom: 19, attribution: 'Relief : Mapzen / AWS Open Data' });
 }
 
 function boundsOf(lat, lon, size) {
