@@ -125,10 +125,68 @@ export function canvasToPNG(c) {
   return new Promise((res) => c.toBlob(async (b) => res(new Uint8Array(await b.arrayBuffer())), 'image/png'));
 }
 
+// Les .rvmat de a3\map_data n'existent pas dans un lecteur P: extrait (seules les textures
+// .paa y sont) : on écrit donc nos propres .rvmat dans <carte>\data, qui pointent vers ces textures.
+const A3_GDT = /^a3\\map_data\\(gdt_\w+)\.rvmat$/i;
+export function surfaceMaterial(su, tag) {
+  if (!su.rvmat || A3_GDT.test(su.rvmat)) return `${tag}\\data\\${su.id}.rvmat`;
+  return su.rvmat;
+}
+export function groundRvmat(texBase) {
+  return `ambient[]={0.9,0.9,0.9,1};
+diffuse[]={0.9,0.9,0.9,1};
+forcedDiffuse[]={0.02,0.02,0.02,1};
+emmisive[]={0,0,0,0};
+specular[]={0,0,0,0};
+specularPower=0;
+class Stage0
+{
+\ttexture="${texBase}_nopx.paa";
+\ttexGen=0;
+};
+class Stage1
+{
+\ttexture="${texBase}_co.paa";
+\ttexGen=1;
+};
+class TexGen0
+{
+\tuvSource="tex";
+\tclass uvTransform
+\t{
+\t\taside[]={1,0,0};
+\t\tup[]={0,1,0};
+\t\tdir[]={0,0,1};
+\t\tpos[]={0,0,0};
+\t};
+};
+class TexGen1
+{
+\tuvSource="tex";
+\tclass uvTransform
+\t{
+\t\taside[]={10,0,0};
+\t\tup[]={0,10,0};
+\t\tdir[]={0,0,10};
+\t\tpos[]={0,0,0};
+\t};
+};
+`;
+}
+// Fichiers .rvmat à écrire dans <carte>\data pour les surfaces vanilla d'Arma 3.
+export function surfaceRvmats(surfaces) {
+  const out = {};
+  for (const su of surfaces) {
+    const m = A3_GDT.exec(su.rvmat || '');
+    if (m) out[`${su.id}.rvmat`] = groundRvmat(`a3\\map_data\\${m[1]}`);
+  }
+  return out;
+}
+
 export function layersCfg(surfaces, tag) {
-  let s = '// Généré par TerraForge. Remplace les chemins .rvmat par ceux de ton mod.\nclass Layers\n{\n';
+  let s = '// Généré par TerraForge.\nclass Layers\n{\n';
   for (const su of surfaces)
-    s += `\tclass ${su.id}\n\t{\n\t\ttexture = "";\n\t\tmaterial = "${su.rvmat || `${tag}\\data\\${su.id}.rvmat`}";\n\t};\n`;
+    s += `\tclass ${su.id}\n\t{\n\t\ttexture = "";\n\t\tmaterial = "${surfaceMaterial(su, tag)}";\n\t};\n`;
   s += '};\n\nclass Legend\n{\n\tpicture = "' + tag + '\\source\\mapLegend.png";\n\tclass Colors\n\t{\n';
   for (const su of surfaces) s += `\t\t${su.id}[] = {{${su.mask.join(',')}}};\n`;
   s += '\t};\n};\n';
@@ -333,6 +391,7 @@ export async function buildExportZip(state, opts) {
   if (opts.xyz) files[`${src}${name}.xyz`] = heightmapXYZ(T, off);
   files[`${src}${name}_mask.png`] = await canvasToPNG(maskCanvas(T, opts.imageScale || 1));
   files[`${src}layers.cfg`] = strToU8(layersCfg(T.surfaces, name));
+  if (opts.game !== 'dayz') for (const [f, txt] of Object.entries(surfaceRvmats(T.surfaces))) files[`${name}/data/${f}`] = strToU8(txt);
   files[`${src}${name}_sat.png`] = await canvasToPNG(satCanvas(T, opts.imageScale || 1));
   files[`${src}${name}_objets.txt`] = strToU8(objectsTXT(O.objects, O.library, T, off));
   const shp = roadsShapefile(R.roads, R, T, off);
@@ -377,8 +436,8 @@ Dans Terrain Builder :
 
 config.cpp est une base minimale (hérite de Stratis) : complète-la
 (noms de lieux, éclairage, etc.) avant de publier.
-Les chemins .rvmat de layers.cfg pour le jeu "Altis / Stratis" pointent vers
-a3\\map_data : vérifie-les dans ton lecteur P: avant de générer les couches.
+Les matériaux de sol (.rvmat) sont fournis dans data\\ et utilisent les textures
+de a3\\map_data : il faut donc les données d'Arma 3 extraites dans le lecteur P:.
 
 ${opts.geo ? `Données réelles à créditer si tu publies la map :
 - Routes, bâtiments, occupation du sol : (c) contributeurs OpenStreetMap (ODbL)
