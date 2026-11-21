@@ -362,15 +362,27 @@ export async function fetchOSM(cfg, progress = () => {}) {
     parts.push(`relation["type"="multipolygon"]["landuse"~"^(forest|farmland|meadow|reservoir)$"]${bb};`);
   }
   if (!parts.length) return { elements: [] };
-  const query = `[out:json][timeout:90];(${parts.join('')});out geom;`;
+  const query = `[out:json][timeout:60];(${parts.join('')});out geom;`;
   let lastErr;
-  for (const url of OVERPASS) {
+  for (let n = 0; n < OVERPASS.length; n++) {
+    const ctl = new AbortController();
+    const t0 = Date.now();
+    const label = `OpenStreetMap : téléchargement des routes, forêts et bâtiments (serveur ${n + 1} sur ${OVERPASS.length})`;
+    const timer = setInterval(() => {
+      const sec = Math.round((Date.now() - t0) / 1000);
+      progress(`${label}… ${sec} s`);
+      if (sec >= 75) ctl.abort();
+    }, 1000);
     try {
-      progress('OpenStreetMap : téléchargement des routes, forêts et bâtiments…');
-      const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(query), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-      if (!r.ok) throw new Error(`Serveur OpenStreetMap occupé (${r.status})`);
-      return await r.json();
-    } catch (err) { lastErr = err; }
+      progress(`${label}…`);
+      const r = await fetch(OVERPASS[n], { method: 'POST', signal: ctl.signal, body: 'data=' + encodeURIComponent(query), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+      if (!r.ok) throw new Error(`serveur occupé, code ${r.status}`);
+      const json = await r.json();
+      if (json.remark && !(json.elements || []).length) throw new Error(json.remark);
+      return json;
+    } catch (err) {
+      lastErr = err.name === 'AbortError' ? new Error('pas de réponse après 75 secondes') : err;
+    } finally { clearInterval(timer); }
   }
   throw lastErr;
 }
