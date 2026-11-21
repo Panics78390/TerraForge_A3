@@ -360,7 +360,7 @@ const moveKeys = new Set();
 let moveSpeed = 1;
 {
   const el = document.querySelector('#st-speed input'), lab = document.querySelector('#st-speed b');
-  const apply = (v) => { moveSpeed = 2 ** v; lab.textContent = '×' + (moveSpeed >= 1 ? +moveSpeed.toFixed(1) : +moveSpeed.toFixed(2)); };
+  const apply = (v) => { moveSpeed = 2 ** v; controls.panSpeed = moveSpeed; controls.rotateSpeed = 2 ** (v * 0.6); controls.zoomSpeed = 2 ** (v * 0.6); lab.textContent = '×' + (moveSpeed >= 1 ? +moveSpeed.toFixed(1) : +moveSpeed.toFixed(2)); };
   let saved = 0;
   try { saved = parseFloat(localStorage.getItem('tf-move-speed')) || 0; } catch { /* stockage indisponible */ }
   el.value = saved; apply(+el.value);
