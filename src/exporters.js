@@ -278,6 +278,47 @@ class CfgWorlds
 `;
 }
 
+// Base de configuration pour DayZ (à compléter : lieux, météo, économie centrale...).
+export function configCppDayZ(name, T, author) {
+  const half = Math.round(T.size / 2);
+  return `// Généré par TerraForge : base de configuration DayZ à compléter.
+class CfgPatches
+{
+	class ${name}
+	{
+		units[] = {};
+		weapons[] = {};
+		requiredVersion = 0.1;
+		requiredAddons[] = {"DZ_Data", "DZ_Surfaces"};
+		author = "${author || ''}";
+	};
+};
+
+class CfgWorldList
+{
+	class ${name} {};
+};
+
+class CfgWorlds
+{
+	class CAWorld;
+	class ${name}: CAWorld
+	{
+		description = "${name}";
+		author = "${author || ''}";
+		worldName = "\\${name}\\${name}.wrp";
+		mapSize = ${T.size};
+		longitude = 30;
+		latitude = -45; // négatif = hémisphère nord
+		centerPosition[] = {${half}, ${half}, 300};
+		startTime = "12:00";
+		startDate = "15/6/2011";
+		class Names {};
+	};
+};
+`;
+}
+
 // ---------- Paquet complet : dossier du mod ----------
 export async function buildExportZip(state, opts) {
   const { terrain: T, objects: O, roads: R } = state;
@@ -287,7 +328,7 @@ export async function buildExportZip(state, opts) {
   const off = { east: opts.offsetEast ?? 200000, north: opts.offsetNorth ?? 0 };
   const files = {};
   const src = `${name}/source/`;
-  files[`${name}/config.cpp`] = strToU8(configCpp(name, T, opts.author, opts.geo));
+  files[`${name}/config.cpp`] = strToU8(opts.game === 'dayz' ? configCppDayZ(name, T, opts.author) : configCpp(name, T, opts.author, opts.geo));
   files[`${src}${name}.asc`] = heightmapASC(T, off);
   if (opts.xyz) files[`${src}${name}.xyz`] = heightmapXYZ(T, off);
   files[`${src}${name}_mask.png`] = await canvasToPNG(maskCanvas(T, opts.imageScale || 1));
@@ -299,7 +340,9 @@ export async function buildExportZip(state, opts) {
   files[`${name}/data/roads/roads.shx`] = shp.shx;
   files[`${name}/data/roads/roads.dbf`] = shp.dbf;
   files[`${name}/data/roads/RoadsLib.cfg`] = strToU8(roadsLibCfg(R.types, name));
-  files[`${name}/LISEZMOI.txt`] = strToU8(readme(name, T, off, opts, O.objects.length, R.roads.length));
+  let rd = readme(name, T, off, opts, O.objects.length, R.roads.length);
+  if (opts.game === 'dayz') rd = rd.replace('export pour Terrain Builder', 'export pour Terrain Builder (DayZ Tools)').replace(/config\.cpp est une base minimale[\s\S]*?avant de générer les couches\.\n/, 'config.cpp est une base minimale pour DayZ (hérite de CAWorld) : complète-la avant de\npublier. Vérifie dans ton lecteur P: les chemins .rvmat de layers.cfg (DZ\\surfaces) et\nutilise Terrain Builder et Addon Builder des DayZ Tools, pas ceux d\'Arma 3.\n').replace('Mer : Arma 3 place', 'Mer : DayZ place');
+  files[`${name}/LISEZMOI.txt`] = strToU8(rd);
   // Les PNG sont déjà compressés ; niveau faible pour rester rapide sur les grandes cartes.
   return zipSync(files, { level: 3 });
 }

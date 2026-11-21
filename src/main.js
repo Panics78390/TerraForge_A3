@@ -10,6 +10,8 @@ import { loadP3DParts, disposeParts, guessCategory, loadTexture } from './a3mode
 import { RoadManager } from './roads.js';
 import { buildExportZip, parseASC, canvasToJPEG } from './exporters.js';
 import logoUrl from './logo.jpg?inline';
+import { GAMES, gameById } from './games.js';
+import { buildGameZip, HEIGHTMAP_SIZES, defaultHeightmapSize } from './gameexport.js';
 import { readTv4p, parseLayersCfg, readASCFile, baseName } from './tv4p.js';
 import { saveProject, loadProject } from './project.js';
 import { mulberry32, makeNoise } from './noise.js';
@@ -45,7 +47,7 @@ sun.position.set(-3000, 5000, -2000);
 scene.add(sun);
 
 const state = {
-  settings: { radius: 60, strength: 0.5, falloff: 0.6, name: 'MonTerrain', author: '' },
+  settings: { radius: 60, strength: 0.5, falloff: 0.6, name: 'MonTerrain', author: '', game: 'arma3' },
   tool: 'raise',
 };
 
@@ -935,6 +937,7 @@ assetsEl.querySelector('[data-a=model]').onclick = () => importModel();
 assetsEl.querySelector('[data-a=names]').onclick = () => addByNames();
 assetsEl.querySelector('[data-a=eden]').onclick = () => importMapping();
 assetsEl.querySelector('[data-a=a3]').onclick = () => a3Dialog();
+queueMicrotask(() => applyGame());
 
 // ---------- Source des vrais modèles Arma 3 ----------
 const a3 = new A3Source();
@@ -1488,7 +1491,7 @@ async function buildGeoMap(cfg, heights, osm, sat = null) {
 }
 
 async function doNew(first = false) {
-  const cfg = await openWizard();
+  const cfg = await openWizard(currentGame().surfaceSet, currentGame().name);
   if (!cfg) return false;
   if (!first && dirtyProject && !confirmBox('Les modifications non enregistrées seront perdues. Continuer ?')) return false;
   await busy('Création de la carte…', () => createMap(cfg));
@@ -1623,7 +1626,8 @@ async function doOpen() {
     roads.types = json.roadTypes || roads.types;
     roads.roads = json.roads || [];
     roads.rebuild();
-    if (json.settings) Object.assign(state.settings, json.settings);
+    if (json.settings) Object.assign(state.settings, { game: 'arma3' }, json.settings);
+    applyGame();
     document.title = `${state.settings.name} · TerraForge`;
     undoStack.length = redoStack.length = 0; saveHandle = null;
     dirtyProject = false;
@@ -1812,7 +1816,8 @@ async function loadTv4p(proj, files, opts) {
     await objects.addLibraryEntry({ id: 'a3_' + Date.now().toString(36) + Math.floor(Math.random() * 1e4), name, tbName: name, cat: guessCategory(key), p3d: key });
     added++;
   }
-  Object.assign(state.settings, { name: proj.name, tbOffset: [fr.east, fr.north], satCredit: '' });
+  Object.assign(state.settings, { name: proj.name, tbOffset: [fr.east, fr.north], satCredit: '', game: state.settings.game === 'dayz' ? 'dayz' : 'arma3' });
+  applyGame();
   delete state.settings.geo;
   toolSettings.surface = 0;
   undoStack.length = redoStack.length = 0; saveHandle = null;
@@ -1862,8 +1867,69 @@ async function doImportHeightmap() {
   toast('Relief importé');
 }
 
+// ======================================================================
+// Choix du jeu
+// ======================================================================
+function currentGame() { return gameById(state.settings.game); }
+function applyGame() {
+  const g = currentGame();
+  const chip = document.getElementById('game-chip');
+  chip.innerHTML = `<i style="background:${g.color}"></i>${esc(g.name)}`;
+  const exp = document.querySelector('#topbar [data-action="export"]');
+  exp.lastChild.textContent = ` Exporter pour ${g.name}`;
+  exp.title = `Crée les fichiers à importer dans ${g.tool}`;
+  for (const k of ['a3', 'eden']) assetsEl.querySelector(`[data-a=${k}]`).style.display = g.rv ? '' : 'none';
+  try { localStorage.setItem('tf-game', g.id); } catch { /* stockage indisponible */ }
+}
+function chooseGame(startup = false) {
+  return new Promise((resolve) => {
+    let last = state.settings.game;
+    try { if (startup) last = localStorage.getItem('tf-game') || last; } catch { /* idem */ }
+    const root = document.createElement('div');
+    root.id = 'game-pick';
+    root.innerHTML = `<div class="gp-box">
+      <img class="gp-logo" src="${logoUrl}" alt="TerraForge">
+      <h2>Pour quel jeu crées-tu ta carte ?</h2>
+      <p class="note">Ce choix règle les surfaces proposées et les fichiers produits à l'export. Tu peux le changer à tout moment avec le bouton du jeu, en haut à gauche.</p>
+      <div class="gp-grid">${GAMES.map((g) => `<button data-g="${g.id}" class="${g.id === last ? 'active' : ''}" style="--gc:${g.color}"><b>${esc(g.name)}</b><small>${esc(g.tool)}</small><span>${esc(g.desc)}</span></button>`).join('')}</div>
+      ${startup ? '' : '<menu><button data-g="">Annuler</button></menu>'}
+    </div>`;
+    document.body.append(root);
+    for (const b of root.querySelectorAll('[data-g]')) b.onclick = () => {
+      root.remove();
+      if (b.dataset.g && b.dataset.g !== state.settings.game) { state.settings.game = b.dataset.g; if (!startup) dirtyProject = true; }
+      applyGame();
+      resolve(b.dataset.g || null);
+    };
+  });
+}
+document.getElementById('game-chip').onclick = async () => {
+  const before = state.settings.game;
+  const g = await chooseGame();
+  if (g && g !== before) toast(`Jeu : ${currentGame().name}. Les surfaces de la carte actuelle sont conservées ; « Nouveau terrain » propose celles de ce jeu.`, 5000);
+};
+
+async function doExportGame(game) {
+  const sizes = HEIGHTMAP_SIZES[game.exp] || HEIGHTMAP_SIZES.generic;
+  const v = await formDialog(`Exporter pour ${game.name}`, [
+    { key: 'tag', label: 'Nom de la carte', value: state.settings.name || 'MaCarte' },
+    { key: 'size', label: 'Précision du relief', type: 'select', value: defaultHeightmapSize(game.exp, terrain.N), options: sizes.map((n) => [n, `${n} × ${n} points (${(terrain.size / n).toFixed(1)} m par point)`]) },
+  ], `Crée un .zip avec le relief, les couches de surface, une vue de dessus, les objets, les routes et un mode d'emploi pas à pas pour ${esc(game.tool)}.`, 'Exporter');
+  if (!v) return;
+  const name = (v.tag || 'MaCarte').trim().replace(/[^A-Za-z0-9_]/g, '_');
+  try {
+    const zip = await busy('Export en cours…', () => buildGameZip(state, game, { tag: name, size: +v.size }));
+    download(zip, `${name}_${game.id}_terraforge.zip`, 'application/zip');
+    toast('Export terminé : lis LISEZMOI.txt dans le .zip', 4000);
+  } catch (err) {
+    console.error(err);
+    alertDialog('Export impossible', esc(err.message || String(err)));
+  }
+}
+
 async function doExport() {
-  const v = await formDialog('Exporter vers Terrain Builder', [
+  if (currentGame().exp !== 'tb') return doExportGame(currentGame());
+  const v = await formDialog(`Exporter pour ${currentGame().name} (Terrain Builder)`, [
     { key: 'tag', label: 'Nom de la carte / du mod', value: state.settings.name || 'MonTerrain' },
     { key: 'offsetEast', label: 'Easting (décalage X)', type: 'number', value: state.settings.tbOffset?.[0] ?? 200000 },
     { key: 'offsetNorth', label: 'Northing (décalage Y)', type: 'number', value: state.settings.tbOffset?.[1] ?? 0 },
@@ -1873,7 +1939,7 @@ async function doExport() {
   if (!v) return;
   const name = (v.tag || 'MonTerrain').trim().replace(/[^A-Za-z0-9_]/g, '_');
   try {
-    const zip = await busy('Export en cours…', () => buildExportZip(state, { ...v, tag: name, author: state.settings.author, geo: state.settings.geo, satCredit: state.settings.satCredit, imageScale: +v.imageScale }));
+    const zip = await busy('Export en cours…', () => buildExportZip(state, { ...v, game: state.settings.game, tag: name, author: state.settings.author, geo: state.settings.geo, satCredit: state.settings.satCredit, imageScale: +v.imageScale }));
     download(zip, `${name}_terraforge.zip`, 'application/zip');
     toast('Export terminé');
   } catch (err) {
@@ -1947,7 +2013,7 @@ function esc(s) {
   window.__tfGeo = { buildGeoMap, fetchElevation, parseOSM, placeBuildings };
   window.__tfDefaults = defaultParams;
   window.__tfA3 = { a3, connectA3, useA3Model, camera, controls, parseObjectLines };
-  if (!new URLSearchParams(location.search).has('nowizard')) doNew(true);
+  if (!new URLSearchParams(location.search).has('nowizard')) chooseGame(true).then(() => doNew(true));
 })();
 
 document.getElementById('brand').insertAdjacentHTML('afterbegin', LOGO);

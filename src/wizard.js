@@ -18,7 +18,7 @@ export const MAP_SIZES = [
 const PV = 256; // résolution de l'aperçu
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
-export function openWizard() {
+export function openWizard(surfaceSet = 'altis', gameName = '') {
   return new Promise((resolve) => {
     const cfg = {
       name: 'MonTerrain',
@@ -26,7 +26,7 @@ export function openWizard() {
       sizeIdx: 1,
       grid: 1024, cell: 4,
       maskRes: 2048,
-      surfaceSet: 'altis',
+      surfaceSet: SURFACE_SETS[surfaceSet] ? surfaceSet : 'altis',
       surfaceOn: null,
       params: defaultParams(),
     };
@@ -42,7 +42,7 @@ export function openWizard() {
       <div class="wz-box">
         <header class="wz-head">
           <div class="brand">${LOGO}<b>Terra<span>Forge</span></b></div>
-          <div class="wz-title">Nouvelle carte</div>
+          <div class="wz-title">Nouvelle carte${gameName ? ` pour ${esc(gameName)}` : ''}</div>
         </header>
         <nav class="wz-nav"></nav>
         <section class="wz-main"></section>

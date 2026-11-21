@@ -211,3 +211,20 @@ button:has(> .ic) { display: inline-flex; align-items: center; justify-content: 
 #st-speed input { width: 90px; }
 #st-speed b { min-width: 34px; }
 .help-logo { display: block; width: 100%; max-width: 460px; margin: 0 auto 10px; border-radius: 8px; }
+
+/* Choix du jeu */
+#game-chip { display: inline-flex; align-items: center; gap: 7px; font-weight: 600; white-space: nowrap; }
+#game-chip i { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+#game-pick { position: fixed; inset: 0; z-index: 60; background: #0a0c0ff2; display: grid; place-items: center; overflow: auto; padding: 16px; }
+.gp-box { width: min(980px, 96vw); background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 20px 24px 22px; box-shadow: 0 20px 80px #000a; }
+.gp-logo { display: block; width: min(380px, 70%); margin: 0 auto 6px; border-radius: 10px; }
+.gp-box h2 { text-align: center; margin: 8px 0 4px; }
+.gp-box p.note { text-align: center; color: var(--muted); font-size: 12px; margin: 0 0 14px; }
+.gp-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); gap: 10px; }
+.gp-grid button { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; text-align: left; padding: 12px 12px 12px 16px; height: auto; white-space: normal;
+  border-left: 5px solid var(--gc); border-radius: 8px; }
+.gp-grid button b { font-size: 16px; }
+.gp-grid button small { color: var(--gc); filter: brightness(1.6); font-weight: 600; }
+.gp-grid button span { color: var(--muted); font-size: 12px; line-height: 1.35; }
+.gp-grid button.active { outline: 2px solid #e8a838; }
+.gp-box menu { display: flex; justify-content: flex-end; margin: 14px 0 0; padding: 0; }

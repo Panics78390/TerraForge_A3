@@ -73,3 +73,7 @@ npm run build:single   # un seul fichier dist-single/index.html, à ouvrir par d
 ## Application Windows
 
 Le logiciel Windows (installation ou version portable) se télécharge dans l'onglet **Releases** du dépôt. Il est fabriqué par le workflow « Application Windows » (`.github/workflows/windows.yml`), à lancer depuis l'onglet Actions. En local : `npm run app` pour le lancer, `npm run dist:win` pour fabriquer le `.exe`.
+
+## Plusieurs jeux
+
+Au lancement, TerraForge demande pour quel jeu la carte est créée : Arma 3, DayZ, Arma Reforger, Roblox, Fortnite (UEFN), Unreal Engine, Unity ou un autre moteur. Ce choix règle les surfaces proposées et le contenu de l'export (relief 16 bits, couches de surface, carte des matériaux Roblox, etc.). Chaque `.zip` exporté contient un `LISEZMOI.txt` avec les réglages d'import pas à pas.
