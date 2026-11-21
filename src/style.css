@@ -207,3 +207,6 @@ button:has(> .ic) { display: inline-flex; align-items: center; justify-content: 
 .tv-files td.ok { color: #7fd38a; white-space: nowrap; }
 .tv-files td.miss { color: #e0b060; white-space: nowrap; }
 .as-warn { color: #e0b060; font-weight: 600; }
+#st-speed { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+#st-speed input { width: 90px; }
+#st-speed b { min-width: 34px; }

@@ -182,6 +182,7 @@ let dragObj = null;
 let lastFrame = performance.now();
 let lastObjRefresh = 0;
 let dirtyProject = false;
+let saveHandle = null; // fichier .tfa3 choisi au premier enregistrement
 
 // ---------- Gizmo de transformation (déplacer / tourner / échelle) ----------
 const gizmoProxy = new THREE.Object3D();
@@ -325,7 +326,7 @@ window.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
   if ((e.ctrlKey || e.metaKey) && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if ((e.ctrlKey || e.metaKey) && k === 'y') { e.preventDefault(); redo(); return; }
-  if ((e.ctrlKey || e.metaKey) && k === 's') { e.preventDefault(); doSave(); return; }
+  if ((e.ctrlKey || e.metaKey) && k === 's') { e.preventDefault(); doSave(e.shiftKey); return; }
   if (k === '[') { state.settings.radius = Math.max(2, Math.round(state.settings.radius / 1.15)); renderPanel(); }
   if (k === ']') { state.settings.radius = Math.min(2000, Math.round(state.settings.radius * 1.15 + 1)); renderPanel(); }
   if (state.tool === 'road') {
@@ -355,6 +356,17 @@ window.addEventListener('blur', () => moveKeys.clear());
 // On lit la position physique des touches (e.code), donc ça marche quel que soit le clavier.
 const MOVE = { KeyE: [0, 0, 1], PageUp: [0, 0, 1], KeyQ: [0, 0, -1], PageDown: [0, 0, -1], KeyW: [0, 1], ArrowUp: [0, 1], KeyS: [0, -1], ArrowDown: [0, -1], KeyA: [-1, 0], ArrowLeft: [-1, 0], KeyD: [1, 0], ArrowRight: [1, 0] };
 const moveKeys = new Set();
+// Réglage de vitesse (barre du bas), mémorisé d'une session à l'autre.
+let moveSpeed = 1;
+{
+  const el = document.querySelector('#st-speed input'), lab = document.querySelector('#st-speed b');
+  const apply = (v) => { moveSpeed = 2 ** v; lab.textContent = '×' + (moveSpeed >= 1 ? +moveSpeed.toFixed(1) : +moveSpeed.toFixed(2)); };
+  let saved = 0;
+  try { saved = parseFloat(localStorage.getItem('tf-move-speed')) || 0; } catch { /* stockage indisponible */ }
+  el.value = saved; apply(+el.value);
+  el.oninput = () => { apply(+el.value); try { localStorage.setItem('tf-move-speed', el.value); } catch { /* idem */ } };
+  el.onchange = () => el.blur();
+}
 window.addEventListener('keydown', (e) => {
   if (!(e.code in MOVE) || e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.target.matches('input, select, textarea') || dlg.open) return;
@@ -372,7 +384,7 @@ function keyboardMove(dt) {
   if (_fwd.lengthSq() < 1e-6) _fwd.set(0, 0, -1);
   _fwd.normalize();
   _right.set(-_fwd.z, 0, _fwd.x);
-  const speed = Math.max(20, camera.position.distanceTo(controls.target)) * (shiftDown ? 2.4 : 0.9) * dt / Math.hypot(mx, mz, my);
+  const speed = Math.max(20, camera.position.distanceTo(controls.target)) * (shiftDown ? 2.4 : 0.9) * moveSpeed * dt / Math.hypot(mx, mz, my);
   _fwd.multiplyScalar(mz * speed).addScaledVector(_right, mx * speed);
   _fwd.y = my * speed;
   // Ne pas passer sous le sol.
@@ -1468,7 +1480,7 @@ async function buildGeoMap(cfg, heights, osm, sat = null) {
   roads.rebuild();
   Object.assign(state.settings, { name: cfg.name, author: cfg.author, geo: { lat: cfg.lat, lon: cfg.lon }, satCredit: sat ? sat.credit : '' });
   toolSettings.surface = 0;
-  undoStack.length = redoStack.length = 0;
+  undoStack.length = redoStack.length = 0; saveHandle = null;
   dirtyProject = true;
   resetView(); renderPanel(); updateInfo();
   document.title = `${cfg.name} · TerraForge`;
@@ -1508,7 +1520,7 @@ function createMap(cfg) {
   toolSettings.surface = 0;
   objects.setObjects([]);
   roads.roads = []; roads.rebuild();
-  undoStack.length = redoStack.length = 0;
+  undoStack.length = redoStack.length = 0; saveHandle = null;
   dirtyProject = false;
   resetView(); renderPanel(); updateInfo();
   document.title = `${cfg.name} · TerraForge`;
@@ -1554,11 +1566,35 @@ function autoPaint(seed = 1, patches = true) {
   terrain.redrawSurface(0, 0, R - 1, R - 1);
 }
 
-async function doSave() {
-  const bytes = saveProject(state, terrain.sat ? await canvasToJPEG(terrain.sat) : null);
-  download(bytes, `${state.settings.name || 'terrain'}.tfa3`);
-  dirtyProject = false;
-  toast('Projet enregistré (fichier .tfa3)');
+// Fichier choisi lors du premier enregistrement : les suivants l'écrasent directement
+// (navigateurs Chrome / Edge). Sinon, repli sur un téléchargement classique.
+async function doSave(saveAs = false) {
+  const name = `${state.settings.name || 'terrain'}.tfa3`;
+  let handle = saveAs ? null : saveHandle;
+  if (!handle && window.showSaveFilePicker) {
+    try {
+      handle = await window.showSaveFilePicker({ suggestedName: name, types: [{ description: 'Projet TerraForge', accept: { 'application/octet-stream': ['.tfa3'] } }] });
+    } catch (err) {
+      if (err && err.name === 'AbortError') return; // annulé par l'utilisateur
+      handle = null; // sélecteur indisponible : téléchargement
+    }
+  }
+  try {
+    await busy('Enregistrement du projet…', async () => {
+      const bytes = saveProject(state, terrain.sat ? await canvasToJPEG(terrain.sat) : null);
+      if (handle) {
+        const w = await handle.createWritable();
+        await w.write(bytes);
+        await w.close();
+        saveHandle = handle;
+      } else download(bytes, name);
+      dirtyProject = false;
+      toast(handle ? `Projet enregistré dans ${handle.name} (${(bytes.length / 1048576).toFixed(1)} Mo)` : `Projet enregistré : ${name} est dans tes Téléchargements (${(bytes.length / 1048576).toFixed(1)} Mo)`, 4000);
+    });
+  } catch (err) {
+    console.error(err);
+    alertDialog('Enregistrement impossible', `Le projet n'a pas pu être enregistré.<br><br>Raison technique : <code>${esc(err.message || String(err))}</code>`);
+  }
 }
 
 async function doOpen() {
@@ -1588,7 +1624,7 @@ async function doOpen() {
     roads.rebuild();
     if (json.settings) Object.assign(state.settings, json.settings);
     document.title = `${state.settings.name} · TerraForge`;
-    undoStack.length = redoStack.length = 0;
+    undoStack.length = redoStack.length = 0; saveHandle = null;
     dirtyProject = false;
     resetView(); renderPanel(); updateInfo();
     toast('Projet chargé');
@@ -1778,7 +1814,7 @@ async function loadTv4p(proj, files, opts) {
   Object.assign(state.settings, { name: proj.name, tbOffset: [fr.east, fr.north], satCredit: '' });
   delete state.settings.geo;
   toolSettings.surface = 0;
-  undoStack.length = redoStack.length = 0;
+  undoStack.length = redoStack.length = 0; saveHandle = null;
   dirtyProject = true;
   resetView(); renderPanel(); renderAssets(); updateInfo();
   document.title = `${proj.name} · TerraForge`;
@@ -1862,7 +1898,7 @@ function doHelp() {
 
 document.getElementById('topbar').addEventListener('click', (e) => {
   const a = e.target.closest('button')?.dataset.action;
-  ({ new: () => doNew(), geo: doGeo, open: doOpen, save: doSave, 'import-hm': doImportHeightmap, export: doExport, undo, redo, help: doHelp })[a]?.();
+  ({ new: () => doNew(), geo: doGeo, open: doOpen, save: () => doSave(), 'import-hm': doImportHeightmap, export: doExport, undo, redo, help: doHelp })[a]?.();
 });
 window.addEventListener('beforeunload', (e) => { if (dirtyProject) { e.preventDefault(); e.returnValue = ''; } });
 
