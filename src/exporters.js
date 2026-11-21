@@ -71,7 +71,7 @@ function canvasOf(w, h) {
 
 function scaled(src, scale, smooth) {
   if (scale === 1) return src;
-  const c = canvasOf(src.width * scale, src.height * scale), ctx = c.getContext('2d');
+  const c = canvasOf(Math.round(src.width * scale), Math.round(src.height * scale)), ctx = c.getContext('2d');
   ctx.imageSmoothingEnabled = smooth;
   ctx.imageSmoothingQuality = 'high';
   ctx.drawImage(src, 0, 0, c.width, c.height);
@@ -92,6 +92,7 @@ export function maskCanvas(T, scale = 1) {
 
 // Image satellite : couleurs de surface + ombrage du relief.
 export function satCanvas(T, scale = 1) {
+  if (T.sat) return scaled(T.sat, (T.maskRes * scale) / T.sat.width, true); // image réelle importée
   const R = T.maskRes;
   const c = canvasOf(R, R), ctx = c.getContext('2d');
   ctx.drawImage(T.canvas, 0, 0);
@@ -114,6 +115,10 @@ export function satCanvas(T, scale = 1) {
     }
   ctx.putImageData(img, 0, 0);
   return scaled(c, scale, true);
+}
+
+export function canvasToJPEG(c) {
+  return new Promise((res) => c.toBlob(async (b) => res(new Uint8Array(await b.arrayBuffer())), 'image/jpeg', 0.92));
 }
 
 export function canvasToPNG(c) {
@@ -326,6 +331,10 @@ config.cpp est une base minimale (hérite de Stratis) : complète-la
 Les chemins .rvmat de layers.cfg pour le jeu "Altis / Stratis" pointent vers
 a3\\map_data : vérifie-les dans ton lecteur P: avant de générer les couches.
 
-Mer : Arma 3 place le niveau de la mer à 0 m. Tout ce qui est sous 0 m sera de l'eau.
+${opts.geo ? `Données réelles à créditer si tu publies la map :
+- Routes, bâtiments, occupation du sol : (c) contributeurs OpenStreetMap (ODbL)
+- Relief : Mapzen / AWS Terrain Tiles
+${opts.satCredit ? '- Image satellite : ' + opts.satCredit + '\n' : ''}
+` : ''}Mer : Arma 3 place le niveau de la mer à 0 m. Tout ce qui est sous 0 m sera de l'eau.
 `;
 }

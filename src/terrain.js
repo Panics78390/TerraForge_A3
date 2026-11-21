@@ -35,6 +35,11 @@ export class Terrain {
     this.texture.colorSpace = THREE.SRGBColorSpace;
     this.texture.anisotropy = 8;
 
+    if (this.satTexture) this.satTexture.dispose();
+    this.sat = null;         // image satellite réelle (canvas), si importée
+    this.satTexture = null;
+    this.showSat = false;
+
     this.buildMesh();
     this.redrawSurface(0, 0, maskRes - 1, maskRes - 1);
   }
@@ -76,6 +81,20 @@ export class Terrain {
     this.mesh.frustumCulled = false;
     this.scene.add(this.mesh);
     this.updateHeights(0, 0, this.N - 1, this.N - 1);
+  }
+
+  // Image satellite réelle : affichée à la place des couleurs de surface.
+  setSat(canvas) {
+    if (this.satTexture) this.satTexture.dispose();
+    this.sat = canvas;
+    this.satTexture = canvas ? new THREE.CanvasTexture(canvas) : null;
+    if (this.satTexture) { this.satTexture.colorSpace = THREE.SRGBColorSpace; this.satTexture.anisotropy = 8; }
+    this.setShowSat(!!canvas);
+  }
+  setShowSat(on) {
+    this.showSat = on && !!this.satTexture;
+    this.mesh.material.map = this.showSat ? this.satTexture : this.texture;
+    this.mesh.material.needsUpdate = true;
   }
 
   // Coordonnée nord (Y Arma) d'une position z du monde 3D.

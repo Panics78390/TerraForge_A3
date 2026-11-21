@@ -1,7 +1,7 @@
 import { zipSync, unzipSync, strToU8, strFromU8 } from 'fflate';
 
 // Fichier projet .tfa3 = zip contenant project.json + heights.bin + surf.bin
-export function saveProject(state) {
+export function saveProject(state, satBytes) {
   const { terrain: T, objects: O, roads: R } = state;
   const json = {
     format: 'terraforge-a3',
@@ -16,11 +16,13 @@ export function saveProject(state) {
     roads: R.roads,
     settings: state.settings,
   };
-  return zipSync({
+  const files = {
     'project.json': strToU8(JSON.stringify(json)),
     'heights.bin': new Uint8Array(T.heights.buffer.slice(0)),
     'surf.bin': T.surf,
-  }, { level: 6 });
+  };
+  if (satBytes) files['sat.jpg'] = satBytes;
+  return zipSync(files, { level: 3 });
 }
 
 export function loadProject(bytes) {
@@ -30,7 +32,7 @@ export function loadProject(bytes) {
   const heights = new Float32Array(files['heights.bin'].slice().buffer);
   const surf = files['surf.bin'];
   json.objects = json.objects.map(([lib, x, z, rot, scale, dy]) => ({ lib, x, z, rot, scale, dy }));
-  return { json, heights, surf };
+  return { json, heights, surf, sat: files['sat.jpg'] || null };
 }
 
 const round = (v, d = 2) => Math.round(v * 10 ** d) / 10 ** d;

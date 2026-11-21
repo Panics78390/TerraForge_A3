@@ -10,6 +10,9 @@ import { MAP_SIZES, LOGO } from './wizard.js';
 // ======================================================================
 
 const ELEV_URL = (z, x, y) => `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`;
+// Sentinel-2 cloudless 2016 par EOX (licence CC BY 4.0), environ 10 m par pixel.
+const SAT_URL = (z, x, y) => `https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless_3857/default/g/${z}/${y}/${x}.jpg`;
+export const SAT_CREDIT = 'Sentinel-2 cloudless - https://s2maps.eu by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2016)';
 const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'];
 const M_LAT = 111320;
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -21,6 +24,7 @@ export function openGeoDialog() {
       lat: 45.8992, lon: 6.1294,
       sizeIdx: 1, grid: 1024, cell: 4, maskRes: 2048,
       relief: true, altMode: 'real',
+      satellite: true,
       roads: true, paths: false, landuse: true, trees: true, treeDensity: 40, buildings: true,
     };
     const root = document.createElement('div');
@@ -43,13 +47,21 @@ export function openGeoDialog() {
     // « relief » dessiné à partir des tuiles d'altitude, toujours disponible.
     const online = location.protocol.startsWith('http');
     const relief = reliefLayer();
+    const satL = L.tileLayer('https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless_3857/default/g/{z}/{y}/{x}.jpg', {
+      maxNativeZoom: 14, maxZoom: 19, attribution: 'Sentinel-2 cloudless © EOX (Copernicus 2016)',
+    });
+    let satErr = 0;
+    satL.on('tileerror', () => { if (++satErr === 3 && map.hasLayer(satL)) { map.removeLayer(satL); relief.addTo(map); } });
     if (online) {
       const plan = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© contributeurs OpenStreetMap' });
       let errors = 0;
       plan.on('tileerror', () => { if (++errors === 3 && map.hasLayer(plan)) { map.removeLayer(plan); relief.addTo(map); } });
       plan.addTo(map);
-      L.control.layers({ 'Plan': plan, 'Relief': relief }, null, { collapsed: false, position: 'topright' }).addTo(map);
-    } else relief.addTo(map);
+      L.control.layers({ 'Plan': plan, 'Satellite': satL, 'Relief': relief }, null, { collapsed: false, position: 'topright' }).addTo(map);
+    } else {
+      satL.addTo(map);
+      L.control.layers({ 'Satellite': satL, 'Relief': relief }, null, { collapsed: false, position: 'topright' }).addTo(map);
+    }
     const rect = L.rectangle(boundsOf(cfg.lat, cfg.lon, size()), { color: '#d9a441', weight: 2, fillOpacity: 0.18, interactive: false }).addTo(map);
     const syncRect = () => {
       const c = map.getCenter();
@@ -79,7 +91,7 @@ export function openGeoDialog() {
       side.innerHTML = `
         <h2>Monde réel</h2>
         <p class="note">Cherche un lieu, puis déplace la carte : le carré jaune reste au centre et montre la zone qui deviendra ta map.</p>
-        ${location.protocol.startsWith('http') ? '' : '<p class="note warn">Fichier local : seul le fond « relief » est disponible. Le plan avec les noms de lieux s\'affiche dans la version en ligne.</p>'}
+        ${location.protocol.startsWith('http') ? '' : '<p class="note warn">Fichier local : fonds « satellite » et « relief ». Le plan avec les noms de lieux s\'affiche dans la version en ligne.</p>'}
         <div class="row"><input type="text" data-k="q" placeholder="Ville, lieu, adresse…"><button class="small" data-a="search">Chercher</button></div>
         <div class="list" data-k="results"></div>
         <div class="row"><label>Latitude</label><input type="number" step="0.0001" data-k="lat"></div>
@@ -96,6 +108,7 @@ export function openGeoDialog() {
       const opts = side.querySelector('[data-k=opts]');
       opts.append(
         check('Relief', 'relief', 'Altitudes réelles, fonds marins compris'),
+        check('Image satellite', 'satellite', 'Vraie photo satellite (10 m par pixel) plaquée sur le terrain'),
         check('Routes', 'roads', 'Routes, rues et chemins de terre'),
         check('Sentiers', 'paths', 'Sentiers piétons et pistes cyclables'),
         check('Occupation du sol', 'landuse', 'Forêts, champs, plages, roche, eau : peints au sol'),
@@ -283,6 +296,55 @@ function boxBlur(a, N, r) {
   };
   pass((j, i) => a[j * N + i], (j, i, v) => (a[j * N + i] = v));
   pass((i, j) => a[j * N + i], (i, j, v) => (a[j * N + i] = v));
+}
+
+// ---------- Image satellite ----------
+// Renvoie un canvas R x R couvrant exactement la carte (haut = nord).
+export async function fetchSatellite(cfg, R, progress = () => {}) {
+  const pr = projector(cfg), S = pr.S;
+  const [[s, w], [n, e]] = boundsOf(cfg.lat, cfg.lon, S + 2 * cfg.cell);
+  const px = (lon, z) => ((lon + 180) / 360) * 2 ** z;
+  const py = (lat, z) => ((1 - Math.asinh(Math.tan((lat * Math.PI) / 180)) / Math.PI) / 2) * 2 ** z;
+  const lonOf = (x, z) => (x / 2 ** z) * 360 - 180;
+  const latOf = (y, z) => (Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / 2 ** z))) * 180) / Math.PI;
+  let z = 14, tx0, tx1, ty0, ty1;
+  for (; z >= 5; z--) {
+    tx0 = Math.floor(px(w, z)); tx1 = Math.floor(px(e, z));
+    ty0 = Math.floor(py(n, z)); ty1 = Math.floor(py(s, z));
+    if ((tx1 - tx0 + 1) * (ty1 - ty0 + 1) <= 196) break;
+  }
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = R;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#5c763a';
+  ctx.fillRect(0, 0, R, R);
+  ctx.imageSmoothingQuality = 'high';
+  const jobs = [];
+  for (let ty = ty0; ty <= ty1; ty++) for (let tx = tx0; tx <= tx1; tx++) jobs.push([tx, ty]);
+  const total = jobs.length;
+  let done = 0, ok = 0;
+  // Position dans le canvas : même repère que le masque (voir Terrain.worldToMask).
+  const toPx = (lat, lon) => { const [x, zz] = pr.toWorld(lat, lon); return [(x / S) * R, ((zz + cfg.cell) / S) * R]; };
+  async function worker() {
+    for (;;) {
+      const job = jobs.pop();
+      if (!job) return;
+      const [tx, ty] = job;
+      try {
+        const r = await fetch(SAT_URL(z, tx, ty));
+        if (!r.ok) throw new Error(r.status);
+        const bmp = await createImageBitmap(await r.blob());
+        const [x0, y0] = toPx(latOf(ty, z), lonOf(tx, z));
+        const [x1, y1] = toPx(latOf(ty + 1, z), lonOf(tx + 1, z));
+        ctx.drawImage(bmp, x0, y0, x1 - x0 + 0.5, y1 - y0 + 0.5);
+        ok++;
+      } catch { /* tuile manquante */ }
+      progress(`Image satellite : ${++done} / ${total} tuiles`);
+    }
+  }
+  await Promise.all(Array.from({ length: 6 }, worker));
+  if (!ok) throw new Error('image satellite indisponible');
+  return canvas;
 }
 
 // ---------- OpenStreetMap ----------

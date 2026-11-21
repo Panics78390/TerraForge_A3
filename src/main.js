@@ -4,12 +4,12 @@ import { Terrain } from './terrain.js';
 import { DEFAULT_SURFACES } from './surfaces.js';
 import { ObjectManager, DEFAULT_LIBRARY } from './objects.js';
 import { RoadManager } from './roads.js';
-import { buildExportZip, parseASC } from './exporters.js';
+import { buildExportZip, parseASC, canvasToJPEG } from './exporters.js';
 import { saveProject, loadProject } from './project.js';
 import { mulberry32, makeNoise } from './noise.js';
 import { openWizard, LOGO } from './wizard.js';
 import { generate, defaultParams } from './gen.js';
-import { openGeoDialog, fetchElevation, fetchOSM, parseOSM, rasterizeAreas } from './geo.js';
+import { openGeoDialog, fetchElevation, fetchOSM, fetchSatellite, parseOSM, rasterizeAreas, SAT_CREDIT } from './geo.js';
 import { SURFACE_SETS } from './surfaces.js';
 
 // ======================================================================
@@ -492,6 +492,7 @@ function renderPanel() {
       panelBody.append(note(`${terrain.size} m × ${terrain.size} m, grille ${terrain.N} × ${terrain.N}, ${terrain.cell} m par cellule.`));
       panelBody.append(btn('Recentrer la vue', resetView));
       panelBody.append(h3('Affichage'));
+      if (terrain.sat) panelBody.append(checkRow('Image satellite réelle', () => terrain.showSat, (v) => terrain.setShowSat(v)));
       panelBody.append(checkRow('Afficher la mer', () => water.visible, (v) => (water.visible = v)));
       panelBody.append(checkRow('Afficher les objets', () => objects.root.visible, (v) => (objects.root.visible = v)));
       panelBody.append(checkRow('Fil de fer', () => terrain.mesh.material.wireframe, (v) => (terrain.mesh.material.wireframe = v)));
@@ -746,11 +747,16 @@ async function doGeo() {
       let osm = { roads: [], buildings: [], areas: [] };
       if (cfg.roads || cfg.paths || cfg.landuse || cfg.trees || cfg.buildings) {
         try { osm = parseOSM(await fetchOSM(cfg, setBusy), cfg); }
-        catch (err) { console.error(err); warning = `Les données OpenStreetMap n'ont pas pu être téléchargées (${err.message || err}). La carte a été créée avec le relief seul ; réessaie plus tard ou avec une zone plus petite.`; }
+        catch (err) { console.error(err); warning += `Les données OpenStreetMap n'ont pas pu être téléchargées (${err.message || err}). La carte a été créée avec le relief seul ; réessaie plus tard ou avec une zone plus petite.`; }
+      }
+      let sat = null;
+      if (cfg.satellite) {
+        try { sat = await fetchSatellite(cfg, cfg.maskRes, setBusy); }
+        catch (err) { console.error(err); warning += ' L\'image satellite n\'a pas pu être téléchargée.'; }
       }
       setBusy('Construction de la carte…');
       await tick();
-      buildGeoMap(cfg, heights, osm);
+      buildGeoMap(cfg, heights, osm, sat);
     });
   } catch (err) {
     console.error(err);
@@ -760,7 +766,7 @@ async function doGeo() {
   else toast(`Carte créée : ${roads.roads.length} routes, ${objects.objects.length.toLocaleString('fr-FR')} objets`, 4000);
 }
 
-function buildGeoMap(cfg, heights, osm) {
+function buildGeoMap(cfg, heights, osm, sat = null) {
   terrain.surfaces = SURFACE_SETS.altis.surfaces.map((s) => ({ ...s }));
   terrain.init(cfg.grid, cfg.cell, cfg.maskRes);
   if (heights) terrain.heights.set(heights); else terrain.heights.fill(10);
@@ -806,10 +812,11 @@ function buildGeoMap(cfg, heights, osm) {
       n++;
     }
   }
+  terrain.setSat(sat);
   objects.setObjects(list);
   roads.roads = osm.roads;
   roads.rebuild();
-  Object.assign(state.settings, { name: cfg.name, author: cfg.author, geo: { lat: cfg.lat, lon: cfg.lon } });
+  Object.assign(state.settings, { name: cfg.name, author: cfg.author, geo: { lat: cfg.lat, lon: cfg.lon }, satCredit: sat ? SAT_CREDIT : '' });
   toolSettings.surface = 0;
   undoStack.length = redoStack.length = 0;
   dirtyProject = true;
@@ -847,6 +854,7 @@ function createMap(cfg) {
   state.settings.name = cfg.name;
   state.settings.author = cfg.author;
   delete state.settings.geo;
+  delete state.settings.satCredit;
   toolSettings.surface = 0;
   objects.setObjects([]);
   roads.roads = []; roads.rebuild();
@@ -897,7 +905,7 @@ function autoPaint(seed = 1, patches = true) {
 }
 
 async function doSave() {
-  const bytes = saveProject(state);
+  const bytes = saveProject(state, terrain.sat ? await canvasToJPEG(terrain.sat) : null);
   download(bytes, `${state.settings.name || 'terrain'}.tfa3`);
   dirtyProject = false;
   toast('Projet enregistré (fichier .tfa3)');
@@ -907,13 +915,20 @@ async function doOpen() {
   const f = await pickFile('.tfa3');
   if (!f) return;
   try {
-    const { json, heights, surf } = loadProject(new Uint8Array(await f.arrayBuffer()));
+    const { json, heights, surf, sat } = loadProject(new Uint8Array(await f.arrayBuffer()));
     terrain.surfaces = json.surfaces;
     terrain.init(json.gridSize, json.cellSize, json.maskRes);
     terrain.heights.set(heights);
     terrain.updateHeights(0, 0, terrain.N - 1, terrain.N - 1);
     terrain.surf.set(surf);
     terrain.redrawSurface(0, 0, terrain.maskRes - 1, terrain.maskRes - 1);
+    if (sat) {
+      const bmp = await createImageBitmap(new Blob([sat], { type: 'image/jpeg' }));
+      const c = document.createElement('canvas');
+      c.width = bmp.width; c.height = bmp.height;
+      c.getContext('2d').drawImage(bmp, 0, 0);
+      terrain.setSat(c);
+    }
     await objects.setLibrary(json.library);
     objects.setObjects(json.objects);
     roads.types = json.roadTypes || roads.types;
@@ -973,7 +988,7 @@ async function doExport() {
   if (!v) return;
   const name = (v.tag || 'MonTerrain').trim().replace(/[^A-Za-z0-9_]/g, '_');
   try {
-    const zip = await busy('Export en cours…', () => buildExportZip(state, { ...v, tag: name, author: state.settings.author, geo: state.settings.geo, imageScale: +v.imageScale }));
+    const zip = await busy('Export en cours…', () => buildExportZip(state, { ...v, tag: name, author: state.settings.author, geo: state.settings.geo, satCredit: state.settings.satCredit, imageScale: +v.imageScale }));
     download(zip, `${name}_terraforge.zip`, 'application/zip');
     toast('Export terminé');
   } catch (err) {
