@@ -30,9 +30,27 @@ renderer.outputColorSpace = THREE.SRGBColorSpace;
 viewport.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
-const SKY = new THREE.Color('#9db8cf');
-scene.background = SKY;
+const SKY = new THREE.Color('#8ebbd4');
+scene.background = makeSky();
 scene.fog = new THREE.Fog(SKY, 3000, 14000);
+
+// Ciel en dégradé (jour, un peu plus profond au zénith). Le brouillard reprend la couleur de l'horizon.
+function makeSky() {
+  const c = document.createElement('canvas');
+  c.width = 4; c.height = 512;
+  const g = c.getContext('2d');
+  const grd = g.createLinearGradient(0, 0, 0, 512);
+  grd.addColorStop(0, '#16324d');
+  grd.addColorStop(0.38, '#3d7eaa');
+  grd.addColorStop(0.55, '#8ebbd4');
+  grd.addColorStop(1, '#c5dbe8');
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 4, 512);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.magFilter = THREE.LinearFilter;
+  return tex;
+}
 
 const camera = new THREE.PerspectiveCamera(55, 1, 1, 60000);
 const controls = new OrbitControls(camera, renderer.domElement);
@@ -41,10 +59,13 @@ controls.dampingFactor = 0.12;
 controls.maxPolarAngle = Math.PI * 0.495;
 controls.screenSpacePanning = false;
 
-scene.add(new THREE.HemisphereLight('#dfeaff', '#4a4230', 1.3));
-const sun = new THREE.DirectionalLight('#fff3dd', 2.2);
+scene.add(new THREE.HemisphereLight('#d7eeff', '#3e5344', 1.25));
+const sun = new THREE.DirectionalLight('#fff4e2', 2.15);
 sun.position.set(-3000, 5000, -2000);
 scene.add(sun);
+const fill = new THREE.DirectionalLight('#9fd4ff', 0.35);
+fill.position.set(4000, 1800, 2800);
+scene.add(fill);
 
 const state = {
   settings: { radius: 60, strength: 0.5, falloff: 0.6, name: 'MonTerrain', author: '', game: 'arma3' },
@@ -64,11 +85,32 @@ const water = new THREE.Mesh(
 water.renderOrder = 1;
 scene.add(water);
 
-// Curseur du pinceau
-const cursor = new THREE.LineLoop(new THREE.BufferGeometry(), new THREE.LineBasicMaterial({ color: 0xffd400, depthTest: false, transparent: true }));
-cursor.renderOrder = 20;
-cursor.geometry.setAttribute('position', new THREE.BufferAttribute(new Float32Array(65 * 3), 3));
-scene.add(cursor);
+// Curseur du pinceau : anneau lumineux qui suit le relief.
+function makeBrushRing(opacity) {
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(65 * 3), 3));
+  const mat = new THREE.LineBasicMaterial({ color: 0x3aa8b8, depthTest: false, transparent: true, opacity });
+  const line = new THREE.LineLoop(geo, mat);
+  line.renderOrder = 20;
+  line.visible = false;
+  return line;
+}
+const cursor = makeBrushRing(0.95);
+const cursorGlow = makeBrushRing(0.32);
+const cursorInner = makeBrushRing(0.5);
+scene.add(cursor, cursorGlow, cursorInner);
+const cursorDot = new THREE.Mesh(
+  new THREE.SphereGeometry(0.7, 10, 8),
+  new THREE.MeshBasicMaterial({ color: 0x3aa8b8, depthTest: false, transparent: true, opacity: 0.95 }),
+);
+cursorDot.renderOrder = 21;
+cursorDot.visible = false;
+scene.add(cursorDot);
+const BRUSH_RINGS = [
+  { line: cursor, scale: 1 },
+  { line: cursorGlow, scale: 1.045 },
+  { line: cursorInner, scale: 0.94 },
+];
 
 function resetView() {
   const S = terrain.size;
@@ -156,6 +198,43 @@ for (const t of TOOLS) {
   b.innerHTML = `${icon(t.icon, 22)}<small>${t.label}</small>`;
   b.onclick = () => setTool(t.id);
   toolsEl.appendChild(b);
+}
+try {
+  if (localStorage.getItem('tf-tools-collapsed') === '1') document.body.classList.add('tools-collapsed');
+  if (localStorage.getItem('tf-panel-collapsed') === '1') document.body.classList.add('panel-collapsed');
+} catch { /* stockage indisponible */ }
+function chromeToggle(side) {
+  const collapsed = side === 'left' ? 'tools-collapsed' : 'panel-collapsed';
+  const key = side === 'left' ? 'tf-tools-collapsed' : 'tf-panel-collapsed';
+  document.body.classList.toggle(collapsed);
+  const on = document.body.classList.contains(collapsed);
+  try { localStorage.setItem(key, on ? '1' : '0'); } catch { /* idem */ }
+  const btn = side === 'left' ? toolsEl.querySelector('.chrome-collapse') : document.querySelector('#panel .chrome-collapse');
+  if (btn) {
+    btn.title = on ? (side === 'left' ? 'Déplier la barre d\'outils' : 'Déplier le panneau') : (side === 'left' ? 'Replier la barre d\'outils' : 'Replier le panneau');
+    btn.innerHTML = icon(on ? (side === 'left' ? 'chevR' : 'chevL') : (side === 'left' ? 'chevL' : 'chevR'), 14);
+  }
+  syncChrome();
+}
+{
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'chrome-collapse';
+  const on = document.body.classList.contains('tools-collapsed');
+  b.title = on ? 'Déplier la barre d\'outils' : 'Replier la barre d\'outils';
+  b.innerHTML = icon(on ? 'chevR' : 'chevL', 14);
+  b.onclick = () => chromeToggle('left');
+  toolsEl.appendChild(b);
+}
+{
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'chrome-collapse';
+  const on = document.body.classList.contains('panel-collapsed');
+  b.title = on ? 'Déplier le panneau' : 'Replier le panneau';
+  b.innerHTML = icon(on ? 'chevL' : 'chevR', 14);
+  b.onclick = () => chromeToggle('right');
+  document.getElementById('panel').prepend(b);
 }
 
 function setTool(id) {
@@ -492,27 +571,48 @@ function eraseObjects(x, z, r) {
 // ======================================================================
 function resize() {
   const w = viewport.clientWidth, h = viewport.clientHeight;
+  if (!w || !h) return;
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
+  // La vue est plein écran (les panneaux sont en verre par-dessus). On décale la
+  // projection pour que la carte reste cadrée dans la zone libre, pas sous les panneaux.
+  const cs = getComputedStyle(document.documentElement);
+  const left = parseFloat(cs.getPropertyValue('--chrome-left'));
+  const right = parseFloat(cs.getPropertyValue('--chrome-right'));
+  const top = parseFloat(cs.getPropertyValue('--chrome-top'));
+  const bottom = parseFloat(cs.getPropertyValue('--chrome-bottom'));
+  if ([left, right, top, bottom].every(Number.isFinite) && left + right < w && top + bottom < h) {
+    const clearCx = left + (w - left - right) / 2;
+    const clearCy = top + (h - top - bottom) / 2;
+    camera.setViewOffset(w, h, w / 2 - clearCx, h / 2 - clearCy, w, h);
+  }
   camera.updateProjectionMatrix();
 }
 window.addEventListener('resize', resize);
 
 function updateCursor() {
   const show = hover && !['nav', 'place', 'select', 'road'].includes(state.tool);
-  cursor.visible = !!show;
+  for (const ring of BRUSH_RINGS) ring.line.visible = !!show;
+  cursorDot.visible = !!show;
   if (!show) return;
-  const P = cursor.geometry.attributes.position;
   const r = state.settings.radius;
-  for (let k = 0; k <= 64; k++) {
-    const a = (k / 64) * Math.PI * 2;
-    const x = hover.x + Math.cos(a) * r, z = hover.z + Math.sin(a) * r;
-    P.setXYZ(k, x, terrain.heightAt(x, z) + 1.5, z);
+  const col = state.tool === 'scatter' && shiftDown ? 0xff5050 : state.tool === 'raise' && shiftDown ? 0x60b0ff : 0x3aa8b8;
+  for (const ring of BRUSH_RINGS) {
+    const P = ring.line.geometry.attributes.position;
+    const rr = r * ring.scale;
+    for (let k = 0; k <= 64; k++) {
+      const a = (k / 64) * Math.PI * 2;
+      const x = hover.x + Math.cos(a) * rr, z = hover.z + Math.sin(a) * rr;
+      P.setXYZ(k, x, terrain.heightAt(x, z) + 1.5, z);
+    }
+    P.needsUpdate = true;
+    ring.line.geometry.computeBoundingSphere();
+    ring.line.material.color.setHex(col);
   }
-  P.needsUpdate = true;
-  cursor.geometry.computeBoundingSphere();
-  const col = state.tool === 'scatter' && shiftDown ? 0xff5050 : state.tool === 'raise' && shiftDown ? 0x60b0ff : 0xffd400;
-  cursor.material.color.setHex(col);
+  cursorDot.position.set(hover.x, hover.y + 1.8, hover.z);
+  cursorDot.material.color.setHex(col);
+  const dist = camera.position.distanceTo(cursorDot.position);
+  cursorDot.scale.setScalar(Math.max(0.8, dist * 0.0035));
 }
 
 function loop() {
@@ -524,6 +624,7 @@ function loop() {
   syncGizmo();
   objects.flush();
   updateCursor();
+  updateHud();
   controls.update();
   renderer.render(scene, camera);
   requestAnimationFrame(loop);
@@ -903,7 +1004,7 @@ const asGrid = assetsEl.querySelector('.as-grid');
   const apply = (h) => {
     const max = Math.max(160, window.innerHeight - 220);
     assetsEl.style.height = Math.round(Math.min(max, Math.max(120, h))) + 'px';
-    resize();
+    syncChrome();
   };
   try { const saved = +localStorage.getItem('tf-assets-h'); if (saved) assetsEl.style.height = saved + 'px'; } catch (e) { /* stockage indisponible */ }
   grip.addEventListener('pointerdown', (e) => {
@@ -920,7 +1021,7 @@ const asGrid = assetsEl.querySelector('.as-grid');
     grip.addEventListener('pointermove', move);
     grip.addEventListener('pointerup', up);
   });
-  grip.addEventListener('dblclick', () => { assetsEl.style.height = ''; try { localStorage.removeItem('tf-assets-h'); } catch (e) { /* ignoré */ } resize(); });
+  grip.addEventListener('dblclick', () => { assetsEl.style.height = ''; try { localStorage.removeItem('tf-assets-h'); } catch (e) { /* ignoré */ } syncChrome(); });
 }
 assetsEl.querySelector('[data-k=filter]').oninput = (e) => { assetUI.filter = e.target.value.toLowerCase(); renderAssets(); };
 assetsEl.querySelector('[data-k=cat]').onchange = (e) => { if (assetUI.view === 'a3') assetUI.group = e.target.value; else assetUI.cat = e.target.value; renderAssets(); };
@@ -931,13 +1032,14 @@ assetsEl.querySelector('[data-a=toggle]').onclick = (e) => {
   assetUI.open = !assetUI.open;
   assetsEl.classList.toggle('closed', !assetUI.open);
   e.currentTarget.innerHTML = icon(assetUI.open ? 'down' : 'up', 14);
-  resize();
+  syncChrome();
 };
 assetsEl.querySelector('[data-a=model]').onclick = () => importModel();
 assetsEl.querySelector('[data-a=names]').onclick = () => addByNames();
 assetsEl.querySelector('[data-a=eden]').onclick = () => importMapping();
 assetsEl.querySelector('[data-a=a3]').onclick = () => a3Dialog();
 queueMicrotask(() => applyGame());
+syncChrome();
 
 // ---------- Source des vrais modèles Arma 3 ----------
 const a3 = new A3Source();
@@ -1975,9 +2077,59 @@ window.addEventListener('beforeunload', (e) => { if (dirtyProject) { e.preventDe
 // ======================================================================
 const stPos = document.getElementById('st-pos');
 const stInfo = document.getElementById('st-info');
+const hudRead = document.getElementById('hud-readout');
 function updateStatus() {
-  if (!hover) { stPos.textContent = '—'; return; }
-  stPos.textContent = `X ${hover.x.toFixed(0)}  Y ${terrain.north(hover.z).toFixed(0)}  Alt. ${hover.y.toFixed(1)} m  Pente ${terrain.slopeAt(hover.x, hover.z).toFixed(0)}°`;
+  if (!hover) {
+    stPos.textContent = '—';
+    if (hudRead) hudRead.textContent = 'X —   Y —   Alt. —';
+    return;
+  }
+  const x = hover.x.toFixed(0), y = terrain.north(hover.z).toFixed(0);
+  const alt = hover.y.toFixed(1), slope = terrain.slopeAt(hover.x, hover.z).toFixed(0);
+  stPos.textContent = `X ${x}  Y ${y}  Alt. ${alt} m  Pente ${slope}°`;
+  if (hudRead) hudRead.textContent = `X ${x}   Y ${y}   Alt. ${alt} m   Pente ${slope}°`;
+}
+const hudRose = document.getElementById('hud-rose');
+const hudScaleBar = document.getElementById('hud-scale-bar');
+const hudScaleLabel = document.getElementById('hud-scale-label');
+const _hudOffset = new THREE.Vector3();
+let lastScaleLabel = '';
+function updateHud() {
+  if (!hudRose) return;
+  _hudOffset.copy(camera.position).sub(controls.target);
+  _hudOffset.y = 0;
+  if (_hudOffset.lengthSq() > 4) {
+    const az = Math.atan2(_hudOffset.x, _hudOffset.z);
+    hudRose.style.transform = `rotate(${-az}rad)`;
+  }
+  const dist = Math.max(1, camera.position.distanceTo(controls.target));
+  const pxH = Math.max(1, renderer.domElement.clientHeight);
+  const mPerPx = (2 * Math.tan((camera.fov * Math.PI) / 360) * dist) / pxH;
+  const raw = Math.max(1, mPerPx * 96);
+  const pow = 10 ** Math.floor(Math.log10(raw));
+  const n = raw / pow;
+  const nice = n < 1.5 ? 1 : n < 3.5 ? 2 : n < 7.5 ? 5 : 10;
+  const meters = nice * pow;
+  if (hudScaleBar) hudScaleBar.style.width = Math.max(28, Math.min(130, meters / mPerPx)).toFixed(0) + 'px';
+  const label = meters >= 1000
+    ? `${(meters / 1000).toLocaleString('fr-FR', { maximumFractionDigits: meters >= 10000 ? 0 : 1 })} km`
+    : `${Math.round(meters).toLocaleString('fr-FR')} m`;
+  if (hudScaleLabel && label !== lastScaleLabel) { lastScaleLabel = label; hudScaleLabel.textContent = label; }
+}
+function syncChrome() {
+  const gap = 10, topH = 52, statusH = 32;
+  const toolsW = document.body.classList.contains('tools-collapsed') ? 36 : 72;
+  const panelW = document.body.classList.contains('panel-collapsed') ? 36 : 300;
+  const assetsH = assetsEl.classList.contains('closed') ? 34 : (parseInt(assetsEl.style.height, 10) || 214);
+  const root = document.documentElement;
+  root.style.setProperty('--tools-w', toolsW + 'px');
+  root.style.setProperty('--panel-w', panelW + 'px');
+  root.style.setProperty('--assets-h', assetsH + 'px');
+  root.style.setProperty('--chrome-top', `${gap + topH + 8}px`);
+  root.style.setProperty('--chrome-left', `${gap + toolsW + 8}px`);
+  root.style.setProperty('--chrome-right', `${gap + panelW + 8}px`);
+  root.style.setProperty('--chrome-bottom', `${gap + statusH + assetsH + 8}px`);
+  resize();
 }
 function updateInfo() {
   stInfo.textContent = `${objects.objects.length.toLocaleString('fr-FR')} objets · ${roads.roads.length} routes`;
@@ -1986,9 +2138,10 @@ function updateInfo() {
 let toastTimer;
 const toastEl = document.createElement('div');
 toastEl.id = 'toast';
+toastEl.innerHTML = '<i></i><span></span>';
 viewport.append(toastEl);
-function toast(msg, ms = 1800) {
-  toastEl.textContent = msg;
+function toast(msg, ms = 2200) {
+  toastEl.querySelector('span').textContent = msg;
   toastEl.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => toastEl.classList.remove('show'), ms);
@@ -2003,6 +2156,7 @@ function esc(s) {
 // ======================================================================
 (async function start() {
   await objects.setLibrary([]);
+  syncChrome();
   resize();
   setTool('raise');
   renderAssets();
