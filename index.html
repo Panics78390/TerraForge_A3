@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TerraForge A3</title>
+  <link rel="stylesheet" href="./src/style.css" />
+</head>
+<body>
+  <header id="topbar">
+    <div class="brand">TerraForge <span>A3</span></div>
+    <button data-action="new">Nouveau terrain</button>
+    <button data-action="open">Ouvrir projet</button>
+    <button data-action="save">Enregistrer projet</button>
+    <button data-action="import-hm">Importer un relief</button>
+    <button data-action="export" class="primary">Exporter vers Terrain Builder</button>
+    <div class="spacer"></div>
+    <button data-action="undo" title="Ctrl+Z">↶ Annuler</button>
+    <button data-action="redo" title="Ctrl+Y">↷ Rétablir</button>
+    <button data-action="help">Aide</button>
+  </header>
+
+  <nav id="tools"></nav>
+
+  <main id="viewport"></main>
+
+  <aside id="panel">
+    <h2 id="panel-title"></h2>
+    <div id="panel-body"></div>
+  </aside>
+
+  <footer id="status">
+    <span id="st-pos">—</span>
+    <span id="st-info"></span>
+    <span class="hint">Clic droit : tourner · Clic molette : déplacer · Molette : zoom · [ ] : taille du pinceau</span>
+  </footer>
+
+  <dialog id="dlg"><form method="dialog" id="dlg-form"></form></dialog>
+  <input type="file" id="file-input" hidden />
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>

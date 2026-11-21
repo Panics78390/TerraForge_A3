@@ -1,0 +1,21 @@
+{
+  "name": "terraforge-a3",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Éditeur de terrain simplifié pour Arma 3 (aperçu 3D en direct, exports Terrain Builder)",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "build:single": "vite build --mode single",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "fflate": "^0.8.2",
+    "three": "0.180.0"
+  },
+  "devDependencies": {
+    "vite": "7.1.5",
+    "vite-plugin-singlefile": "2.3.0"
+  }
+}
