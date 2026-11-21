@@ -1,0 +1,35 @@
+name: Application Windows
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run dist:win
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TerraForge-Windows
+          path: release/*.exe
+      - name: Publier la version
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.exe
+          name: TerraForge ${{ github.ref_name }}
+          body: |
+            Application Windows de TerraForge.
+            - **TerraForge-Installation** : installe le logiciel (raccourci dans le menu Démarrer).
+            - **TerraForge-Portable** : un seul fichier à lancer, sans installation.
