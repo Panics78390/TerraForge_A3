@@ -206,3 +206,4 @@ button:has(> .ic) { display: inline-flex; align-items: center; justify-content: 
 .tv-files code { word-break: break-all; }
 .tv-files td.ok { color: #7fd38a; white-space: nowrap; }
 .tv-files td.miss { color: #e0b060; white-space: nowrap; }
+.as-warn { color: #e0b060; font-weight: 600; }

@@ -1078,7 +1078,17 @@ function renderAssets() {
   const list = objects.library.filter((e) =>
     (!assetUI.cat || (e.cat || 'Divers') === assetUI.cat) &&
     (!assetUI.filter || `${e.name} ${e.tbName}`.toLowerCase().includes(assetUI.filter)));
-  assetsEl.querySelector('.count').textContent = `${list.length} / ${objects.library.length} modèles`;
+  const cubes = objects.library.filter((e) => !e.modelData && !e.shape && (!e.p3d || e._missing)).length;
+  const countEl = assetsEl.querySelector('.count');
+  countEl.textContent = `${list.length} / ${objects.library.length} modèles`;
+  if (cubes) {
+    const w = document.createElement('b');
+    w.className = 'as-warn';
+    w.textContent = a3.count
+      ? ` · ${cubes} en cube : introuvables dans les fichiers Arma 3 donnés (ajoute le .pbo ou le mod qui les contient)`
+      : ` · ${cubes} en cube : clique sur « Modèles Arma 3 » et choisis ton dossier Addons pour voir les vrais modèles`;
+    countEl.append(w);
+  }
   if (!objects.library.length) {
     asGrid.innerHTML = `<div class="as-empty">Ta bibliothèque est vide.<br>Clique sur <b>Modèles Arma 3</b> pour indiquer où sont tes modèles (.pbo ou dossier), puis clique sur ceux que tu veux utiliser : ils s'ajoutent ici.</div>`;
     return;
