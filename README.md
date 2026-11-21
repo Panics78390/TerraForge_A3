@@ -4,6 +4,7 @@
 
 ## Fonctions
 
+- **Import du monde réel** : on cherche un lieu, on cadre la zone, et TerraForge récupère le relief (tuiles Terrarium, environ 30 m), les routes, forêts, plans d'eau et bâtiments (OpenStreetMap, licence ODbL à créditer).
 - **Assistant « Nouvelle carte »** : nom du mod, taille de carte (repères Stratis, Malden, Tanoa, Altis), style de relief (plat, collines, hauts plateaux, montagnes), curseurs de dénivelé, rugosité, crêtes et érosion, mer et côtes (île, presqu'île, côte, archipel), rivières par sources, volcan, canyon, plateaux, cratère, aperçu 2D et 3D en direct, choix des surfaces (jeu Altis / Stratis ou générique).
 - **Aperçu 3D en temps réel** avec la mer au niveau 0 m, comme dans Arma 3.
 - **Relief** : élever / abaisser, lisser, aplanir à un niveau précis (Ctrl+clic pour prendre une altitude).

@@ -9,6 +9,8 @@ import { saveProject, loadProject } from './project.js';
 import { mulberry32, makeNoise } from './noise.js';
 import { openWizard, LOGO } from './wizard.js';
 import { generate, defaultParams } from './gen.js';
+import { openGeoDialog, fetchElevation, fetchOSM, parseOSM, rasterizeAreas } from './geo.js';
+import { SURFACE_SETS } from './surfaces.js';
 
 // ======================================================================
 // Scène
@@ -64,8 +66,9 @@ function resetView() {
   const S = terrain.size;
   water.scale.set(S * 6, 1, S * 6);
   water.position.set(S / 2, 0, S / 2);
-  controls.target.set(S / 2, 0, S / 2);
-  camera.position.set(S / 2, S * 0.55, S * 1.25);
+  const y0 = Math.max(0, terrain.heightAt(S / 2, S / 2));
+  controls.target.set(S / 2, y0, S / 2);
+  camera.position.set(S / 2, y0 + S * 0.55, S * 1.25);
   scene.fog.near = S * 0.8; scene.fog.far = S * 3.5;
   controls.maxDistance = S * 3;
   controls.update();
@@ -577,7 +580,7 @@ function renderPanel() {
       panelBody.append(h3(`Routes (${roads.roads.length})`));
       const list = document.createElement('div');
       list.className = 'list';
-      roads.roads.forEach((r, i) => {
+      roads.roads.slice(0, 150).forEach((r, i) => {
         const t2 = roads.type(r.type);
         const it = document.createElement('div');
         it.className = 'item';
@@ -586,6 +589,7 @@ function renderPanel() {
         list.append(it);
       });
       panelBody.append(list);
+      if (roads.roads.length > 150) panelBody.append(note(`… et ${roads.roads.length - 150} autres routes.`));
       panelBody.append(h3('Terrain'));
       panelBody.append(btn('Aplanir le terrain sous les routes', () => {
         pushUndo('h');
@@ -720,10 +724,97 @@ const busyEl = document.createElement('div');
 busyEl.id = 'busy';
 document.body.append(busyEl);
 async function busy(msg, fn) {
-  busyEl.innerHTML = `<div>${LOGO}<p>${msg}</p></div>`;
+  busyEl.innerHTML = `<div>${LOGO}<p></p></div>`;
+  setBusy(msg);
   busyEl.classList.add('show');
   await new Promise((r) => setTimeout(r, 60));
   try { return await fn(); } finally { busyEl.classList.remove('show'); }
+}
+
+function setBusy(msg) { const p = busyEl.querySelector('p'); if (p) p.textContent = msg; }
+const tick = () => new Promise((r) => setTimeout(r, 30));
+
+// ---------- Import du monde réel ----------
+async function doGeo() {
+  const cfg = await openGeoDialog();
+  if (!cfg) return;
+  if (dirtyProject && !confirmBox('Les modifications non enregistrées seront perdues. Continuer ?')) return;
+  let warning = '';
+  try {
+    await busy('Import du monde réel…', async () => {
+      const heights = cfg.relief ? await fetchElevation(cfg, setBusy) : null;
+      let osm = { roads: [], buildings: [], areas: [] };
+      if (cfg.roads || cfg.paths || cfg.landuse || cfg.trees || cfg.buildings) {
+        try { osm = parseOSM(await fetchOSM(cfg, setBusy), cfg); }
+        catch (err) { console.error(err); warning = `Les données OpenStreetMap n'ont pas pu être téléchargées (${err.message || err}). La carte a été créée avec le relief seul ; réessaie plus tard ou avec une zone plus petite.`; }
+      }
+      setBusy('Construction de la carte…');
+      await tick();
+      buildGeoMap(cfg, heights, osm);
+    });
+  } catch (err) {
+    console.error(err);
+    return alertDialog('Import impossible', esc(err.message || String(err)));
+  }
+  if (warning) alertDialog('Import partiel', esc(warning));
+  else toast(`Carte créée : ${roads.roads.length} routes, ${objects.objects.length.toLocaleString('fr-FR')} objets`, 4000);
+}
+
+function buildGeoMap(cfg, heights, osm) {
+  terrain.surfaces = SURFACE_SETS.altis.surfaces.map((s) => ({ ...s }));
+  terrain.init(cfg.grid, cfg.cell, cfg.maskRes);
+  if (heights) terrain.heights.set(heights); else terrain.heights.fill(10);
+  terrain.updateHeights(0, 0, terrain.N - 1, terrain.N - 1);
+  autoPaint(1, false);
+
+  // Occupation du sol (dans cet ordre : le dernier peint gagne).
+  const R = terrain.maskRes;
+  let forestMask = null;
+  const roles = { grass: ['grass'], drygrass: ['drygrass', 'grass'], concrete: ['concrete', 'gravel'], rock: ['rock'], sand: ['sand'], forest: ['forest', 'grass'], water: ['seabed', 'gravel', 'sand'] };
+  for (const cls of Object.keys(roles)) {
+    const m = rasterizeAreas(osm.areas, cls, terrain);
+    if (!m) continue;
+    if (cls === 'forest') forestMask = m;
+    if (!cfg.landuse) continue;
+    const idx = surfaceByRole(...roles[cls]);
+    if (idx < 0) continue;
+    for (let k = 0; k < R * R; k++) if (m[k]) terrain.surf[k] = idx;
+  }
+  terrain.redrawSurface(0, 0, R - 1, R - 1);
+
+  const list = [];
+  // Bâtiments
+  for (const b of osm.buildings.slice(0, 20000))
+    list.push({ lib: 'house', x: b.x, z: b.z, rot: b.rot, scale: Math.min(2.5, Math.max(0.6, Math.sqrt(b.area) / 9)) });
+  // Arbres dans les forêts
+  if (cfg.trees && forestMask) {
+    let cells = 0;
+    for (let k = 0; k < R * R; k++) cells += forestMask[k];
+    const px = terrain.size / R;
+    const want = Math.min(60000, Math.round(((cells * px * px) / 10000) * cfg.treeDensity));
+    const mix = [['pine', 3], ['beech', 2], ['oak', 1]].filter(([id]) => objects.entry(id));
+    const rnd = mulberry32(12345);
+    for (let n = 0, tries = want * 30; n < want && tries > 0 && mix.length; tries--) {
+      const k = Math.floor(rnd() * R * R);
+      if (!forestMask[k]) continue;
+      const [wx, wz] = terrain.maskToWorld(k % R, Math.floor(k / R));
+      const x = wx + (rnd() - 0.5) * px, z = wz + (rnd() - 0.5) * px;
+      if (!terrain.inside(x, z) || terrain.heightAt(x, z) < 0.5 || terrain.slopeAt(x, z) > 42) continue;
+      let v = rnd() * 6, id = mix[0][0];
+      for (const [i, w] of mix) { v -= w; if (v <= 0) { id = i; break; } }
+      list.push({ lib: id, x, z, rot: rnd() * Math.PI * 2, scale: 0.8 + rnd() * 0.5 });
+      n++;
+    }
+  }
+  objects.setObjects(list);
+  roads.roads = osm.roads;
+  roads.rebuild();
+  Object.assign(state.settings, { name: cfg.name, author: cfg.author, geo: { lat: cfg.lat, lon: cfg.lon } });
+  toolSettings.surface = 0;
+  undoStack.length = redoStack.length = 0;
+  dirtyProject = true;
+  resetView(); renderPanel(); updateInfo();
+  document.title = `${cfg.name} · TerraForge`;
 }
 
 async function doNew(first = false) {
@@ -755,6 +846,7 @@ function createMap(cfg) {
     }
   state.settings.name = cfg.name;
   state.settings.author = cfg.author;
+  delete state.settings.geo;
   toolSettings.surface = 0;
   objects.setObjects([]);
   roads.roads = []; roads.rebuild();
@@ -774,7 +866,7 @@ function surfaceByRole(...roles) {
 
 // Peinture automatique : plage près de l'eau, roche et terre sur les pentes,
 // herbe ailleurs avec des plaques d'herbe sèche et de sous-bois.
-function autoPaint(seed = 1) {
+function autoPaint(seed = 1, patches = true) {
   const R = terrain.maskRes;
   const or0 = (i) => (i < 0 ? 0 : i);
   const grass = or0(surfaceByRole('grass'));
@@ -797,7 +889,7 @@ function autoPaint(seed = 1) {
       else if (sl > 23) s = dirt;
       else {
         const n = fbm(wx / 420, wz / 420, 3);
-        if (n > 0.28) s = dry; else if (n < -0.3) s = forest;
+        if (patches) { if (n > 0.28) s = dry; else if (n < -0.3) s = forest; }
       }
       terrain.surf[y * R + x] = s;
     }
@@ -881,7 +973,7 @@ async function doExport() {
   if (!v) return;
   const name = (v.tag || 'MonTerrain').trim().replace(/[^A-Za-z0-9_]/g, '_');
   try {
-    const zip = await busy('Export en cours…', () => buildExportZip(state, { ...v, tag: name, author: state.settings.author, imageScale: +v.imageScale }));
+    const zip = await busy('Export en cours…', () => buildExportZip(state, { ...v, tag: name, author: state.settings.author, geo: state.settings.geo, imageScale: +v.imageScale }));
     download(zip, `${name}_terraforge.zip`, 'application/zip');
     toast('Export terminé');
   } catch (err) {
@@ -898,6 +990,7 @@ function doHelp() {
     <li><b>Relief</b> : clic pour monter, Maj+clic pour descendre. <b>Aplanir</b> : Ctrl+clic pour prendre l'altitude.</li>
     <li><b>Forêt</b> : règle le mélange d'essences, la densité et l'échelle, puis peins. Maj pour gommer.</li>
     <li><b>Routes</b> : clic pour poser des points, double-clic pour terminer.</li>
+    <li><b>Monde réel</b> crée la carte à partir d'un vrai lieu : relief, routes, forêts, eau et bâtiments.</li>
     <li><b>Nouveau terrain</b> ouvre l'assistant : taille, style de relief, mer, rivières, volcan, canyon, surfaces.</li>
     <li><b>Exporter</b> produit un .zip contenant le dossier du mod, à décompresser sur P: ; le fichier LISEZMOI.txt explique chaque étape.</li>
   </ul>
@@ -906,7 +999,7 @@ function doHelp() {
 
 document.getElementById('topbar').addEventListener('click', (e) => {
   const a = e.target.closest('button')?.dataset.action;
-  ({ new: () => doNew(), open: doOpen, save: doSave, 'import-hm': doImportHeightmap, export: doExport, undo, redo, help: doHelp })[a]?.();
+  ({ new: () => doNew(), geo: doGeo, open: doOpen, save: doSave, 'import-hm': doImportHeightmap, export: doExport, undo, redo, help: doHelp })[a]?.();
 });
 window.addEventListener('beforeunload', (e) => { if (dirtyProject) { e.preventDefault(); e.returnValue = ''; } });
 
@@ -949,6 +1042,7 @@ function esc(s) {
   loop();
   window.__tf = state; // pratique pour le débogage dans la console
   window.__tfCreate = createMap;
+  window.__tfGeo = { buildGeoMap, fetchElevation, parseOSM };
   window.__tfDefaults = defaultParams;
   if (!new URLSearchParams(location.search).has('nowizard')) doNew(true);
 })();

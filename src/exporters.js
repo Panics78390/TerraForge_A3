@@ -220,7 +220,7 @@ export function roadsLibCfg(types, tag) {
 }
 
 // ---------- config.cpp ----------
-export function configCpp(name, T, author) {
+export function configCpp(name, T, author, geo) {
   const half = Math.round(T.size / 2);
   return `// Généré par TerraForge : base de configuration à compléter.
 class CfgPatches
@@ -252,8 +252,8 @@ class CfgWorlds
 		pictureShot = "";
 		mapSize = ${T.size};
 		mapZone = 35;
-		longitude = 25;
-		latitude = -40;
+		longitude = ${geo ? geo.lon.toFixed(3) : 25};
+		latitude = ${geo ? (-geo.lat).toFixed(3) : -40}; // négatif = hémisphère nord
 		elevationOffset = 0;
 		startTime = "12:00";
 		startDate = "15/6/2035";
@@ -276,7 +276,7 @@ export async function buildExportZip(state, opts) {
   const off = { east: opts.offsetEast ?? 200000, north: opts.offsetNorth ?? 0 };
   const files = {};
   const src = `${name}/source/`;
-  files[`${name}/config.cpp`] = strToU8(configCpp(name, T, opts.author));
+  files[`${name}/config.cpp`] = strToU8(configCpp(name, T, opts.author, opts.geo));
   files[`${src}${name}.asc`] = heightmapASC(T, off);
   if (opts.xyz) files[`${src}${name}.xyz`] = heightmapXYZ(T, off);
   files[`${src}${name}_mask.png`] = await canvasToPNG(maskCanvas(T, opts.imageScale || 1));

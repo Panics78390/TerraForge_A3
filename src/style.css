@@ -138,3 +138,12 @@ input.switch:checked::after { left: 18px; }
 #busy.show { display: grid; }
 #busy .logo { width: 56px; height: 56px; color: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse { 50% { opacity: .35; transform: scale(.92); } }
+
+/* ---------- Import du monde réel ---------- */
+.wz-box.geo { grid-template-columns: 1fr 360px; grid-template-areas: "head head" "map side" "foot foot"; }
+.geo-map { grid-area: map; position: relative; min-height: 0; }
+#geo-leaflet { position: absolute; inset: 0; background: #20262d; }
+.geo-side { grid-area: side; border-left: 1px solid var(--line); max-width: none; }
+.geo-side .row label { flex-basis: 120px; }
+.geo-opt { border: 1px solid var(--line); border-radius: 6px; margin: 4px 0; background: var(--panel2); }
+.leaflet-container { font: inherit; }

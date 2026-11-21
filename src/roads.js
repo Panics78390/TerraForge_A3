@@ -6,6 +6,8 @@ export const DEFAULT_ROAD_TYPES = [
   { id: 1, name: 'Route principale (asphalte)', width: 10, color: '#3a3a3c', map: 'main road' },
   { id: 2, name: 'Route secondaire', width: 7, color: '#4a4a4a', map: 'road' },
   { id: 3, name: 'Chemin de terre', width: 4, color: '#7a6347', map: 'track' },
+  { id: 4, name: 'Rue', width: 5.5, color: '#555557', map: 'road' },
+  { id: 5, name: 'Sentier', width: 1.6, color: '#8a7658', map: 'trail' },
 ];
 
 export class RoadManager {
@@ -26,23 +28,49 @@ export class RoadManager {
   sample(road, step = 2) {
     const pts = road.points.map(([x, z]) => new THREE.Vector3(x, 0, z));
     if (pts.length < 2) return pts;
+    if (road.raw) {
+      // Tracé importé (OpenStreetMap) : déjà précis, simple densification linéaire.
+      const out = [pts[0]];
+      for (let k = 1; k < pts.length; k++) {
+        const p = pts[k - 1], q = pts[k];
+        const n = Math.max(1, Math.ceil(p.distanceTo(q) / step));
+        for (let m = 1; m <= n; m++) out.push(p.clone().lerp(q, m / n));
+      }
+      return out;
+    }
     const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
     const n = Math.max(2, Math.ceil(curve.getLength() / step));
     return curve.getSpacedPoints(n);
   }
 
+  // Un seul maillage par type de route (des milliers de routes restent fluides).
   rebuild() {
     for (const c of [...this.group.children]) { this.group.remove(c); c.geometry.dispose(); c.material.dispose(); }
+    const byType = new Map();
     for (const road of this.roads) {
       if (road.points.length < 2) continue;
-      this.group.add(this.ribbon(road));
+      const t = this.type(road.type);
+      let acc = byType.get(t);
+      if (!acc) byType.set(t, (acc = { pos: [], idx: [] }));
+      this.ribbon(road, t, acc);
+    }
+    for (const [t, acc] of byType) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(acc.pos, 3));
+      geo.setIndex(acc.idx);
+      geo.computeVertexNormals();
+      const mat = new THREE.MeshStandardMaterial({
+        color: t.color, roughness: 1, side: THREE.DoubleSide,
+        polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
+      });
+      this.group.add(new THREE.Mesh(geo, mat));
     }
   }
 
-  ribbon(road) {
-    const t = this.type(road.type);
-    const pts = this.sample(road, 2);
-    const pos = [], idx = [];
+  ribbon(road, t, acc) {
+    const pts = this.sample(road, Math.max(2, this.terrain.cell * 0.75));
+    const { pos, idx } = acc;
+    const base = pos.length / 3;
     const hw = t.width / 2;
     for (let k = 0; k < pts.length; k++) {
       const a = pts[Math.max(0, k - 1)], b = pts[Math.min(pts.length - 1, k + 1)];
@@ -51,22 +79,13 @@ export class RoadManager {
       const nx = -dz / len, nz = dx / len;
       for (const s of [-1, 1]) {
         const x = pts[k].x + nx * hw * s, z = pts[k].z + nz * hw * s;
-        pos.push(x, this.terrain.heightAt(x, z) + 0.25, z);
+        pos.push(x, this.terrain.heightAt(x, z) + 0.3, z);
       }
       if (k > 0) {
-        const i = k * 2;
+        const i = base + k * 2;
         idx.push(i - 2, i - 1, i, i - 1, i + 1, i);
       }
     }
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    geo.setIndex(idx);
-    geo.computeVertexNormals();
-    const mat = new THREE.MeshStandardMaterial({
-      color: t.color, roughness: 1, side: THREE.DoubleSide,
-      polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2,
-    });
-    return new THREE.Mesh(geo, mat);
   }
 
   // ---- Tracé interactif ----
