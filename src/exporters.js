@@ -278,6 +278,8 @@ class CfgWorlds
 export async function buildExportZip(state, opts) {
   const { terrain: T, objects: O, roads: R } = state;
   const name = opts.tag || 'MonTerrain';
+  // Sat et masque doivent avoir la même taille : on s'aligne sur l'image réelle si elle est plus fine.
+  if (T.sat) opts = { ...opts, imageScale: Math.max(opts.imageScale || 1, Math.min(8, Math.ceil(T.sat.width / T.maskRes))) };
   const off = { east: opts.offsetEast ?? 200000, north: opts.offsetNorth ?? 0 };
   const files = {};
   const src = `${name}/source/`;

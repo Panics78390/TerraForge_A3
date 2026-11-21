@@ -9,7 +9,7 @@ import { saveProject, loadProject } from './project.js';
 import { mulberry32, makeNoise } from './noise.js';
 import { openWizard, LOGO } from './wizard.js';
 import { generate, defaultParams } from './gen.js';
-import { openGeoDialog, fetchElevation, fetchOSM, fetchSatellite, parseOSM, rasterizeAreas, SAT_CREDIT } from './geo.js';
+import { openGeoDialog, fetchElevation, fetchOSM, fetchSatellite, parseOSM, rasterizeAreas } from './geo.js';
 import { SURFACE_SETS } from './surfaces.js';
 
 // ======================================================================
@@ -493,6 +493,8 @@ function renderPanel() {
       panelBody.append(btn('Recentrer la vue', resetView));
       panelBody.append(h3('Affichage'));
       if (terrain.sat) panelBody.append(checkRow('Image satellite réelle', () => terrain.showSat, (v) => terrain.setShowSat(v)));
+      panelBody.append(btn('Importer ma propre image satellite…', importSatImage));
+      panelBody.append(note('Image carrée couvrant toute la carte, le nord en haut (PNG ou JPG).'));
       panelBody.append(checkRow('Afficher la mer', () => water.visible, (v) => (water.visible = v)));
       panelBody.append(checkRow('Afficher les objets', () => objects.root.visible, (v) => (objects.root.visible = v)));
       panelBody.append(checkRow('Fil de fer', () => terrain.mesh.material.wireframe, (v) => (terrain.mesh.material.wireframe = v)));
@@ -629,6 +631,25 @@ function libraryTools() {
   }
 }
 
+async function importSatImage() {
+  const f = await pickFile('.png,.jpg,.jpeg,.webp');
+  if (!f) return;
+  try {
+    const bmp = await createImageBitmap(f);
+    const side = Math.min(8192, Math.max(bmp.width, bmp.height));
+    const c = document.createElement('canvas');
+    c.width = c.height = side;
+    c.getContext('2d').drawImage(bmp, 0, 0, side, side);
+    terrain.setSat(c);
+    state.settings.satCredit = '';
+    dirtyProject = true;
+    renderPanel();
+    toast('Image satellite appliquée');
+  } catch (err) {
+    alertDialog('Image illisible', esc(err.message || String(err)));
+  }
+}
+
 function confirmBox(msg) { return window.confirm(msg); }
 
 async function importModel() {
@@ -752,7 +773,7 @@ async function doGeo() {
       }
       let sat = null;
       if (cfg.satellite) {
-        try { sat = await fetchSatellite(cfg, cfg.maskRes, setBusy); }
+        try { sat = await fetchSatellite(cfg, setBusy); }
         catch (err) { console.error(err); warning += ' L\'image satellite n\'a pas pu être téléchargée.'; }
       }
       setBusy('Construction de la carte…');
@@ -813,11 +834,11 @@ function buildGeoMap(cfg, heights, osm, sat = null) {
       n++;
     }
   }
-  terrain.setSat(sat);
+  terrain.setSat(sat ? sat.canvas : null);
   objects.setObjects(list);
   roads.roads = osm.roads;
   roads.rebuild();
-  Object.assign(state.settings, { name: cfg.name, author: cfg.author, geo: { lat: cfg.lat, lon: cfg.lon }, satCredit: sat ? SAT_CREDIT : '' });
+  Object.assign(state.settings, { name: cfg.name, author: cfg.author, geo: { lat: cfg.lat, lon: cfg.lon }, satCredit: sat ? sat.credit : '' });
   toolSettings.surface = 0;
   undoStack.length = redoStack.length = 0;
   dirtyProject = true;

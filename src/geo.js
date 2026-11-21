@@ -10,9 +10,16 @@ import { MAP_SIZES, LOGO } from './wizard.js';
 // ======================================================================
 
 const ELEV_URL = (z, x, y) => `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${x}/${y}.png`;
-// Sentinel-2 cloudless 2016 par EOX (licence CC BY 4.0), environ 10 m par pixel.
-const SAT_URL = (z, x, y) => `https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless_3857/default/g/${z}/${y}/${x}.jpg`;
-export const SAT_CREDIT = 'Sentinel-2 cloudless - https://s2maps.eu by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2016)';
+// Sources d'images.
+//  - ign : photos aériennes BD ORTHO de l'IGN (France, ~20 cm/px, Licence Ouverte 2.0)
+//  - s2  : Sentinel-2 cloudless 2016 par EOX (monde entier, ~10 m/px, CC BY 4.0)
+const IGN_TILES = 'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=ORTHOIMAGERY.ORTHOPHOTOS&STYLE=normal&TILEMATRIXSET=PM&FORMAT=image/jpeg&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}';
+const S2_TILES = 'https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless_3857/default/g/{z}/{y}/{x}.jpg';
+export const SAT_SOURCES = {
+  ign: { name: 'Photo aérienne IGN (France, très détaillée)', url: IGN_TILES, maxZ: 19, credit: 'Photographies aériennes : IGN - BD ORTHO (Licence Ouverte 2.0)' },
+  s2: { name: 'Sentinel-2 (monde entier, 10 m par pixel)', url: S2_TILES, maxZ: 14, credit: 'Sentinel-2 cloudless - https://s2maps.eu by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2016)' },
+};
+const inFrance = (lat, lon) => lat > 41.2 && lat < 51.3 && lon > -5.3 && lon < 9.8;
 const OVERPASS = [
   'https://overpass-api.de/api/interpreter',
   'https://overpass.private.coffee/api/interpreter',
@@ -29,7 +36,7 @@ export function openGeoDialog() {
       lat: 45.8992, lon: 6.1294,
       sizeIdx: 1, grid: 1024, cell: 4, maskRes: 2048,
       relief: true, altMode: 'real',
-      satellite: true,
+      satellite: true, satSource: 'auto', satRes: 4096,
       roads: true, paths: false, landuse: true, trees: true, treeDensity: 40, buildings: true,
     };
     const root = document.createElement('div');
@@ -52,9 +59,8 @@ export function openGeoDialog() {
     // « relief » dessiné à partir des tuiles d'altitude, toujours disponible.
     const online = location.protocol.startsWith('http');
     const relief = reliefLayer();
-    const satL = L.tileLayer('https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless_3857/default/g/{z}/{y}/{x}.jpg', {
-      maxNativeZoom: 14, maxZoom: 19, attribution: 'Sentinel-2 cloudless © EOX (Copernicus 2016)',
-    });
+    const satL = L.tileLayer(S2_TILES, { maxNativeZoom: 14, maxZoom: 19, attribution: 'Sentinel-2 cloudless © EOX (Copernicus 2016)' });
+    const ignL = L.tileLayer(IGN_TILES, { maxNativeZoom: 19, maxZoom: 20, attribution: 'Photos aériennes © IGN' });
     let satErr = 0;
     satL.on('tileerror', () => { if (++satErr === 3 && map.hasLayer(satL)) { map.removeLayer(satL); relief.addTo(map); } });
     if (online) {
@@ -62,10 +68,10 @@ export function openGeoDialog() {
       let errors = 0;
       plan.on('tileerror', () => { if (++errors === 3 && map.hasLayer(plan)) { map.removeLayer(plan); relief.addTo(map); } });
       plan.addTo(map);
-      L.control.layers({ 'Plan': plan, 'Satellite': satL, 'Relief': relief }, null, { collapsed: false, position: 'topright' }).addTo(map);
+      L.control.layers({ 'Plan': plan, 'Photo IGN (France)': ignL, 'Satellite': satL, 'Relief': relief }, null, { collapsed: false, position: 'topright' }).addTo(map);
     } else {
-      satL.addTo(map);
-      L.control.layers({ 'Satellite': satL, 'Relief': relief }, null, { collapsed: false, position: 'topright' }).addTo(map);
+      ignL.addTo(map);
+      L.control.layers({ 'Photo IGN (France)': ignL, 'Satellite (monde)': satL, 'Relief': relief }, null, { collapsed: false, position: 'topright' }).addTo(map);
     }
     const rect = L.rectangle(boundsOf(cfg.lat, cfg.lon, size()), { color: '#d9a441', weight: 2, fillOpacity: 0.18, interactive: false }).addTo(map);
     const syncRect = () => {
@@ -96,7 +102,7 @@ export function openGeoDialog() {
       side.innerHTML = `
         <h2>Monde réel</h2>
         <p class="note">Cherche un lieu, puis déplace la carte : le carré jaune reste au centre et montre la zone qui deviendra ta map.</p>
-        ${location.protocol.startsWith('http') ? '' : '<p class="note warn">Fichier local : fonds « satellite » et « relief ». Le plan avec les noms de lieux s\'affiche dans la version en ligne.</p>'}
+        ${location.protocol.startsWith('http') ? '' : '<p class="note warn">Fichier local : fonds « photo IGN », « satellite » et « relief ». Hors de France, choisis « Satellite (monde) » en haut à droite de la carte. Le plan avec les noms de lieux s\'affiche dans la version en ligne.</p>'}
         <div class="row"><input type="text" data-k="q" placeholder="Ville, lieu, adresse…"><button class="small" data-a="search">Chercher</button></div>
         <div class="list" data-k="results"></div>
         <div class="row"><label>Latitude</label><input type="number" step="0.0001" data-k="lat"></div>
@@ -105,6 +111,9 @@ export function openGeoDialog() {
         <div class="row"><select data-k="size">${MAP_SIZES.map((m, i) => `<option value="${i}" ${i === cfg.sizeIdx ? 'selected' : ''}>${m.side} m · ${m.label}</option>`).join('')}</select></div>
         <h3>Données à importer</h3>
         <div data-k="opts"></div>
+        <div class="row"><label>Source de l'image</label><select data-k="src"><option value="auto">Automatique (IGN en France)</option><option value="ign">${SAT_SOURCES.ign.name}</option><option value="s2">${SAT_SOURCES.s2.name}</option></select></div>
+        <div class="row"><label>Finesse de l'image</label><select data-k="sres"><option value="2048">2048 px (rapide)</option><option value="4096">4096 px</option><option value="8192">8192 px (très détaillé, long)</option></select></div>
+        <p class="note" data-k="sresinfo"></p>
         <div class="row"><label>Altitudes</label><select data-k="alt"><option value="real">Réelles</option><option value="shift">Point bas ramené à 5 m</option></select></div>
         <div class="row"><label>Arbres par hectare</label><input type="range" min="5" max="150" step="5" value="${cfg.treeDensity}" data-k="dens"><output>${cfg.treeDensity}</output></div>
         <h3>Projet</h3>
@@ -113,7 +122,7 @@ export function openGeoDialog() {
       const opts = side.querySelector('[data-k=opts]');
       opts.append(
         check('Relief', 'relief', 'Altitudes réelles, fonds marins compris'),
-        check('Image satellite', 'satellite', 'Vraie photo satellite (10 m par pixel) plaquée sur le terrain'),
+        check('Image satellite', 'satellite', 'Vraie photo plaquée sur le terrain'),
         check('Routes', 'roads', 'Routes, rues et chemins de terre'),
         check('Sentiers', 'paths', 'Sentiers piétons et pistes cyclables'),
         check('Occupation du sol', 'landuse', 'Forêts, champs, plages, roche, eau : peints au sol'),
@@ -121,6 +130,10 @@ export function openGeoDialog() {
         check('Bâtiments', 'buildings', 'Une maison placée et orientée par bâtiment'),
       );
       const $ = (k) => side.querySelector(`[data-k=${k}]`);
+      const sresInfo = () => { $('sresinfo').textContent = `Soit ${(size() / cfg.satRes).toFixed(2)} m par pixel sur cette carte.`; };
+      $('src').value = cfg.satSource; $('src').onchange = (e) => (cfg.satSource = e.target.value);
+      $('sres').value = cfg.satRes; $('sres').onchange = (e) => { cfg.satRes = +e.target.value; sresInfo(); };
+      sresInfo();
       $('alt').value = cfg.altMode;
       $('alt').onchange = (e) => (cfg.altMode = e.target.value);
       $('dens').oninput = (e) => { cfg.treeDensity = +e.target.value; e.target.nextElementSibling.textContent = e.target.value; };
@@ -129,7 +142,7 @@ export function openGeoDialog() {
         cfg.sizeIdx = +e.target.value;
         const m = MAP_SIZES[cfg.sizeIdx];
         cfg.grid = m.grid; cfg.cell = m.cell;
-        syncRect();
+        syncRect(); sresInfo();
         map.fitBounds(rect.getBounds().pad(0.3));
       };
       const go = () => { const la = parseFloat($('lat').value), lo = parseFloat($('lon').value); if (isFinite(la) && isFinite(lo)) map.setView([la, lo]); };
@@ -304,19 +317,32 @@ function boxBlur(a, N, r) {
 }
 
 // ---------- Image satellite ----------
-// Renvoie un canvas R x R couvrant exactement la carte (haut = nord).
-export async function fetchSatellite(cfg, R, progress = () => {}) {
+// Renvoie { canvas, credit } ; le canvas R x R couvre exactement la carte (haut = nord).
+export async function fetchSatellite(cfg, progress = () => {}) {
+  const R = cfg.satRes;
+  let src = cfg.satSource === 'auto' ? (inFrance(cfg.lat, cfg.lon) ? 'ign' : 's2') : cfg.satSource;
+  try {
+    return await loadSat(cfg, R, SAT_SOURCES[src], progress);
+  } catch (err) {
+    if (src === 's2') throw err;
+    return loadSat(cfg, Math.min(R, 4096), SAT_SOURCES.s2, progress); // hors couverture IGN
+  }
+}
+
+async function loadSat(cfg, R, source, progress) {
   const pr = projector(cfg), S = pr.S;
   const [[s, w], [n, e]] = boundsOf(cfg.lat, cfg.lon, S + 2 * cfg.cell);
   const px = (lon, z) => ((lon + 180) / 360) * 2 ** z;
   const py = (lat, z) => ((1 - Math.asinh(Math.tan((lat * Math.PI) / 180)) / Math.PI) / 2) * 2 ** z;
   const lonOf = (x, z) => (x / 2 ** z) * 360 - 180;
   const latOf = (y, z) => (Math.atan(Math.sinh(Math.PI * (1 - (2 * y) / 2 ** z))) * 180) / Math.PI;
-  let z = 14, tx0, tx1, ty0, ty1;
+  // Zoom dont la finesse correspond à l'image demandée, limité par la source.
+  const want = Math.ceil(Math.log2((156543.03 * Math.cos((cfg.lat * Math.PI) / 180)) / (S / R)));
+  let z = Math.min(source.maxZ, Math.max(5, want)), tx0, tx1, ty0, ty1;
   for (; z >= 5; z--) {
     tx0 = Math.floor(px(w, z)); tx1 = Math.floor(px(e, z));
     ty0 = Math.floor(py(n, z)); ty1 = Math.floor(py(s, z));
-    if ((tx1 - tx0 + 1) * (ty1 - ty0 + 1) <= 196) break;
+    if ((tx1 - tx0 + 1) * (ty1 - ty0 + 1) <= 2000) break;
   }
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = R;
@@ -335,21 +361,25 @@ export async function fetchSatellite(cfg, R, progress = () => {}) {
       const job = jobs.pop();
       if (!job) return;
       const [tx, ty] = job;
-      try {
-        const r = await fetch(SAT_URL(z, tx, ty));
-        if (!r.ok) throw new Error(r.status);
-        const bmp = await createImageBitmap(await r.blob());
-        const [x0, y0] = toPx(latOf(ty, z), lonOf(tx, z));
-        const [x1, y1] = toPx(latOf(ty + 1, z), lonOf(tx + 1, z));
-        ctx.drawImage(bmp, x0, y0, x1 - x0 + 0.5, y1 - y0 + 0.5);
-        ok++;
-      } catch { /* tuile manquante */ }
-      progress(`Image satellite : ${++done} / ${total} tuiles`);
+      for (let attempt = 0; attempt < 2; attempt++) {
+        try {
+          const r = await fetch(source.url.replace('{z}', z).replace('{x}', tx).replace('{y}', ty));
+          if (!r.ok) throw new Error(r.status);
+          const bmp = await createImageBitmap(await r.blob());
+          const [x0, y0] = toPx(latOf(ty, z), lonOf(tx, z));
+          const [x1, y1] = toPx(latOf(ty + 1, z), lonOf(tx + 1, z));
+          ctx.drawImage(bmp, x0, y0, x1 - x0 + 0.5, y1 - y0 + 0.5);
+          bmp.close();
+          ok++;
+          break;
+        } catch { /* nouvel essai, puis tuile laissée vide */ }
+      }
+      if (++done % 5 === 0 || done === total) progress(`Image satellite : ${done} / ${total} tuiles`);
     }
   }
-  await Promise.all(Array.from({ length: 6 }, worker));
-  if (!ok) throw new Error('image satellite indisponible');
-  return canvas;
+  await Promise.all(Array.from({ length: 8 }, worker));
+  if (ok < total * 0.5) throw new Error('image satellite indisponible');
+  return { canvas, credit: source.credit };
 }
 
 // ---------- OpenStreetMap ----------
