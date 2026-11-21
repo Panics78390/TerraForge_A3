@@ -1082,20 +1082,25 @@ async function importMapping() {
   const res = await new Promise((resolve) => {
     dlgForm.innerHTML = `<h2>Importer un mapping</h2>
       <div style="display:flex;flex-direction:column;gap:8px;min-width:560px">
-        <p class="note"><b>Depuis l'éditeur Eden d'Arma 3 :</b> ouvre ta mission dans Eden, ouvre la console de débogage (Outils → Console de débogage), colle ce script et clique « Exécution locale ». Tous les objets posés sont copiés dans le presse-papiers. Reviens ici et colle-les dans la zone du bas.</p>
-        <textarea readonly data-k="script" style="min-height:92px">${esc(EDEN_SCRIPT)}</textarea>
+        <p class="note"><b>Le plus simple :</b> dans l'éditeur Eden, utilise <b>Exporter dans Terrain Builder</b>, clique <b>Copier</b>, puis colle ici dans la zone du bas (ou enregistre le texte dans un fichier .txt et ouvre-le).</p>
+        <p class="note">Autre méthode, si tu n'as pas ce menu : colle ce script dans la console de débogage d'Eden, il copie tous les objets posés dans le presse-papiers.</p>
+        <textarea readonly data-k="script" style="min-height:60px;flex:none">${esc(EDEN_SCRIPT)}</textarea>
         <div><button type="button" class="small" data-a="copy">Copier le script</button> <button type="button" class="small" data-a="file">Ouvrir un fichier .txt (format Terrain Builder)…</button></div>
         <textarea data-k="data" placeholder='Colle ici les objets (Ctrl+V), une ligne par objet :\n"Land_i_House_Big_01_V1_F";12345.6;6789.1;90;0;0;1;0;'></textarea>
         <div class="row"><label>Position</label><select data-k="mode">
           <option value="keep">Garder les coordonnées d'Arma (même carte ou même taille)</option>
           <option value="center">Centrer le mapping sur ma carte</option></select></div>
+        <div class="row"><label>Hauteur</label><select data-k="zmode">
+          <option value="ground">Poser les objets sur le sol (conseillé)</option>
+          <option value="abs">La hauteur du fichier est une altitude (export Eden)</option>
+          <option value="rel">La hauteur du fichier est un décalage au-dessus du sol</option></select></div>
         <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-k="replace"> Remplacer les objets déjà posés</label>
       </div>
       <menu><button value="cancel">Annuler</button><button value="ok" class="primary">Importer</button></menu>`;
     const q = (k) => dlgForm.querySelector(k);
     q('[data-a=copy]').onclick = async (e) => { try { await navigator.clipboard.writeText(EDEN_SCRIPT); } catch (err) { q('[data-k=script]').select(); document.execCommand('copy'); } e.target.textContent = 'Script copié'; };
     q('[data-a=file]').onclick = async () => { const f = await pickFile('.txt'); if (f) q('[data-k=data]').value = await f.text(); };
-    dlg.onclose = () => resolve(dlg.returnValue === 'ok' ? { text: q('[data-k=data]').value, mode: q('[data-k=mode]').value, replace: q('[data-k=replace]').checked } : null);
+    dlg.onclose = () => resolve(dlg.returnValue === 'ok' ? { text: q('[data-k=data]').value, mode: q('[data-k=mode]').value, zmode: q('[data-k=zmode]').value, replace: q('[data-k=replace]').checked } : null);
     dlg.showModal();
   });
   if (!res) return;
@@ -1127,11 +1132,15 @@ async function importMapping() {
     }
     for (const e of byName.values()) if (names.includes((e.tbName || '').toLowerCase())) { if (e.p3d && !e._missing) real++; else simple++; }
     pushUndo('o');
+    const zOf = (r, x, z) => {
+      const v = res.zmode === 'rel' ? r.Z : res.zmode === 'abs' ? r.Z - terrain.heightAt(x, z) : 0;
+      return Math.abs(v) > 0.005 ? Math.round(v * 1000) / 1000 : 0;
+    };
     const list = res.replace ? [] : objects.objects.slice();
     for (const r of rows) {
       const x = r.X + dx, z = S - (r.Y + dy);
       if (!terrain.inside(x, z)) { outside++; continue; }
-      list.push({ lib: byName.get(r.name.toLowerCase()).id, x, z, rot: (-r.yaw * Math.PI) / 180, scale: r.scale, dy: Math.abs(r.Z) > 0.005 ? r.Z : 0 });
+      list.push({ lib: byName.get(r.name.toLowerCase()).id, x, z, rot: (-r.yaw * Math.PI) / 180, scale: r.scale, dy: zOf(r, x, z) });
       added++;
     }
     objects.setObjects(list);
