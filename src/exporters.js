@@ -6,30 +6,43 @@ export const DEFAULT_OFFSET = { east: 200000, north: 0 };
 const fmt = (v, d = 3) => Number(v.toFixed(d)).toString();
 
 // ---------- Relief ----------
+// Renvoie des octets (les grandes grilles dépassent la taille maximale d'une chaîne).
 export function heightmapASC(T, off = DEFAULT_OFFSET) {
-  const N = T.N;
-  const lines = [
+  const N = T.N, enc = new TextEncoder();
+  const chunks = [enc.encode([
     `ncols         ${N}`,
     `nrows         ${N}`,
     `xllcorner     ${off.east}`,
     `yllcorner     ${off.north}`,
     `cellsize      ${T.cell}`,
     `NODATA_value  -9999`,
-  ];
+  ].join('\n') + '\n')];
+  const row = new Array(N);
   for (let j = 0; j < N; j++) {
-    const row = new Array(N);
-    for (let i = 0; i < N; i++) row[i] = fmt(T.heights[j * N + i], 2);
-    lines.push(row.join(' '));
+    for (let i = 0; i < N; i++) row[i] = T.heights[j * N + i].toFixed(2);
+    chunks.push(enc.encode(row.join(' ') + '\n'));
   }
-  return lines.join('\n') + '\n';
+  return concat(chunks);
 }
 
 export function heightmapXYZ(T, off = DEFAULT_OFFSET) {
-  const N = T.N, out = [];
-  for (let j = 0; j < N; j++)
+  const N = T.N, enc = new TextEncoder(), chunks = [];
+  const row = new Array(N);
+  for (let j = 0; j < N; j++) {
     for (let i = 0; i < N; i++)
-      out.push(`${fmt(off.east + i * T.cell, 2)} ${fmt(off.north + T.size - j * T.cell, 2)} ${fmt(T.heights[j * N + i], 2)}`);
-  return out.join('\n') + '\n';
+      row[i] = `${fmt(off.east + i * T.cell, 2)} ${fmt(off.north + T.north(j * T.cell), 2)} ${T.heights[j * N + i].toFixed(2)}`;
+    chunks.push(enc.encode(row.join('\n') + '\n'));
+  }
+  return concat(chunks);
+}
+
+function concat(chunks) {
+  let len = 0;
+  for (const c of chunks) len += c.length;
+  const out = new Uint8Array(len);
+  let o = 0;
+  for (const c of chunks) { out.set(c, o); o += c.length; }
+  return out;
 }
 
 export function parseASC(text) {
@@ -56,45 +69,51 @@ function canvasOf(w, h) {
   return c;
 }
 
-export function maskCanvas(T, scale = 1) {
-  const R = T.maskRes, S = R * scale;
-  const c = canvasOf(S, S), ctx = c.getContext('2d');
-  const img = ctx.createImageData(S, S), D = img.data;
-  for (let y = 0; y < S; y++)
-    for (let x = 0; x < S; x++) {
-      const s = T.surfaces[T.surf[Math.floor(y / scale) * R + Math.floor(x / scale)]] || T.surfaces[0];
-      const k = (y * S + x) * 4;
-      D[k] = s.mask[0]; D[k + 1] = s.mask[1]; D[k + 2] = s.mask[2]; D[k + 3] = 255;
-    }
-  ctx.putImageData(img, 0, 0);
+function scaled(src, scale, smooth) {
+  if (scale === 1) return src;
+  const c = canvasOf(src.width * scale, src.height * scale), ctx = c.getContext('2d');
+  ctx.imageSmoothingEnabled = smooth;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(src, 0, 0, c.width, c.height);
   return c;
+}
+
+export function maskCanvas(T, scale = 1) {
+  const R = T.maskRes;
+  const c = canvasOf(R, R), ctx = c.getContext('2d');
+  const img = ctx.createImageData(R, R), D = img.data;
+  for (let k = 0; k < R * R; k++) {
+    const s = T.surfaces[T.surf[k]] || T.surfaces[0];
+    D[k * 4] = s.mask[0]; D[k * 4 + 1] = s.mask[1]; D[k * 4 + 2] = s.mask[2]; D[k * 4 + 3] = 255;
+  }
+  ctx.putImageData(img, 0, 0);
+  return scaled(c, scale, false); // sans lissage : les couleurs du masque restent exactes
 }
 
 // Image satellite : couleurs de surface + ombrage du relief.
 export function satCanvas(T, scale = 1) {
-  const R = T.maskRes, S = R * scale;
-  const c = canvasOf(S, S), ctx = c.getContext('2d');
-  ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(T.canvas, 0, 0, S, S);
-  const img = ctx.getImageData(0, 0, S, S), D = img.data;
+  const R = T.maskRes;
+  const c = canvasOf(R, R), ctx = c.getContext('2d');
+  ctx.drawImage(T.canvas, 0, 0);
+  const img = ctx.getImageData(0, 0, R, R), D = img.data;
   const L = [-0.5, 0.75, -0.45];
   const ll = Math.hypot(...L);
-  for (let y = 0; y < S; y++)
-    for (let x = 0; x < S; x++) {
-      const wx = (x / (S - 1)) * T.size, wz = (y / (S - 1)) * T.size;
-      const c2 = T.cell;
+  const c2 = Math.max(T.cell, T.size / R);
+  for (let y = 0; y < R; y++)
+    for (let x = 0; x < R; x++) {
+      const [wx, wz] = T.maskToWorld(x, y);
       const nx = T.heightAt(wx - c2, wz) - T.heightAt(wx + c2, wz);
       const nz = T.heightAt(wx, wz - c2) - T.heightAt(wx, wz + c2);
       const ny = 2 * c2;
       const nl = Math.hypot(nx, ny, nz);
       const shade = 0.55 + 0.6 * Math.max(0, (nx * L[0] + ny * L[1] + nz * L[2]) / (nl * ll));
-      const k = (y * S + x) * 4;
+      const k = (y * R + x) * 4;
       D[k] = Math.min(255, D[k] * shade);
       D[k + 1] = Math.min(255, D[k + 1] * shade);
       D[k + 2] = Math.min(255, D[k + 2] * shade);
     }
   ctx.putImageData(img, 0, 0);
-  return c;
+  return scaled(c, scale, true);
 }
 
 export function canvasToPNG(c) {
@@ -102,9 +121,9 @@ export function canvasToPNG(c) {
 }
 
 export function layersCfg(surfaces, tag) {
-  let s = '// Généré par TerraForge A3. Remplace les chemins .rvmat par ceux de ton mod.\nclass Layers\n{\n';
+  let s = '// Généré par TerraForge. Remplace les chemins .rvmat par ceux de ton mod.\nclass Layers\n{\n';
   for (const su of surfaces)
-    s += `\tclass ${su.id}\n\t{\n\t\ttexture = "";\n\t\tmaterial = "${tag}\\data\\gdt_${su.id}.rvmat";\n\t};\n`;
+    s += `\tclass ${su.id}\n\t{\n\t\ttexture = "";\n\t\tmaterial = "${su.rvmat || `${tag}\\data\\${su.id}.rvmat`}";\n\t};\n`;
   s += '};\n\nclass Legend\n{\n\tpicture = "' + tag + '\\source\\mapLegend.png";\n\tclass Colors\n\t{\n';
   for (const su of surfaces) s += `\t\t${su.id}[] = {{${su.mask.join(',')}}};\n`;
   s += '\t};\n};\n';
@@ -118,7 +137,7 @@ export function objectsTXT(objects, library, T, off = DEFAULT_OFFSET) {
   const names = new Map(library.map((e) => [e.id, e.tbName || e.name]));
   const out = [];
   for (const o of objects) {
-    const east = off.east + o.x, north = off.north + T.size - o.z;
+    const east = off.east + o.x, north = off.north + T.north(o.z);
     let yaw = (-o.rot * 180) / Math.PI;
     yaw = ((yaw % 360) + 360) % 360;
     out.push(`"${names.get(o.lib)}";${fmt(east)};${fmt(north)};${fmt(yaw, 2)};0;0;${fmt(o.scale, 3)};${fmt(o.dy || 0, 3)};`);
@@ -129,7 +148,7 @@ export function objectsTXT(objects, library, T, off = DEFAULT_OFFSET) {
 // ---------- Routes : shapefile (polylignes) ----------
 export function roadsShapefile(roads, roadMgr, T, off = DEFAULT_OFFSET) {
   const recs = roads.filter((r) => r.points.length >= 2).map((r) => {
-    const pts = roadMgr.sample(r, 5).map((p) => [off.east + p.x, off.north + T.size - p.z]);
+    const pts = roadMgr.sample(r, 5).map((p) => [off.east + p.x, off.north + T.north(p.z)]);
     return { id: r.type, pts };
   });
   const bboxOf = (pts) => {
@@ -192,7 +211,7 @@ export function roadsShapefile(roads, roadMgr, T, off = DEFAULT_OFFSET) {
 }
 
 export function roadsLibCfg(types, tag) {
-  let s = '// Généré par TerraForge A3. Adapte les textures/matériaux à ton mod.\nclass RoadTypesLibrary\n{\n';
+  let s = '// Généré par TerraForge. Adapte les textures/matériaux à ton mod.\nclass RoadTypesLibrary\n{\n';
   for (const t of types) {
     const n = String(t.id).padStart(4, '0');
     s += `\tclass Road${n}\n\t{\n\t\twidth = ${t.width};\n\t\tmainStrTex = "${tag}\\data\\roads\\road${n}_co.paa";\n\t\tmainTerTex = "${tag}\\data\\roads\\road${n}_end_co.paa";\n\t\tmainMat = "${tag}\\data\\roads\\road${n}.rvmat";\n\t\tmap = "${t.map}";\n\t\tAIpathOffset = ${Math.max(1, Math.round(t.width / 4))};\n\t\torder = ${t.id};\n\t};\n`;
@@ -200,31 +219,86 @@ export function roadsLibCfg(types, tag) {
   return s + '};\n';
 }
 
-// ---------- Paquet complet ----------
-export async function buildExportZip(state, opts) {
-  const { terrain: T, objects: O, roads: R } = state;
-  const tag = opts.tag || 'monterrain';
-  const off = { east: opts.offsetEast ?? 200000, north: opts.offsetNorth ?? 0 };
-  const files = {};
-  files['heightmap.asc'] = strToU8(heightmapASC(T, off));
-  if (opts.xyz) files['heightmap.xyz'] = strToU8(heightmapXYZ(T, off));
-  files['mask/mask.png'] = await canvasToPNG(maskCanvas(T, opts.imageScale || 1));
-  files['mask/layers.cfg'] = strToU8(layersCfg(T.surfaces, tag));
-  files['sat/sat.png'] = await canvasToPNG(satCanvas(T, opts.imageScale || 1));
-  files['objets/objets_terrain_builder.txt'] = strToU8(objectsTXT(O.objects, O.library, T, off));
-  const shp = roadsShapefile(R.roads, R, T, off);
-  files['routes/roads.shp'] = shp.shp;
-  files['routes/roads.shx'] = shp.shx;
-  files['routes/roads.dbf'] = shp.dbf;
-  files['routes/RoadsLib.cfg'] = strToU8(roadsLibCfg(R.types, tag));
-  files['LISEZMOI.txt'] = strToU8(readme(T, off, opts, O.objects.length, R.roads.length));
-  return zipSync(files, { level: 6 });
+// ---------- config.cpp ----------
+export function configCpp(name, T, author) {
+  const half = Math.round(T.size / 2);
+  return `// Généré par TerraForge : base de configuration à compléter.
+class CfgPatches
+{
+	class ${name}
+	{
+		units[] = {};
+		weapons[] = {};
+		requiredVersion = 1.0;
+		requiredAddons[] = {"A3_Map_Stratis"};
+		author = "${author || ''}";
+	};
+};
+
+class CfgWorldList
+{
+	class ${name} {};
+};
+
+class CfgWorlds
+{
+	class Stratis;
+	class ${name}: Stratis
+	{
+		description = "${name}";
+		author = "${author || ''}";
+		worldName = "\\${name}\\${name}.wrp";
+		pictureMap = "";
+		pictureShot = "";
+		mapSize = ${T.size};
+		mapZone = 35;
+		longitude = 25;
+		latitude = -40;
+		elevationOffset = 0;
+		startTime = "12:00";
+		startDate = "15/6/2035";
+		centerPosition[] = {${half}, ${half}, 300};
+		ilsPosition[] = {0, 0};
+		ilsDirection[] = {0, 0, 0};
+		ilsTaxiIn[] = {};
+		ilsTaxiOff[] = {};
+		class SecondaryAirports {};
+		class Names {};
+	};
+};
+`;
 }
 
-function readme(T, off, opts, nObj, nRoads) {
+// ---------- Paquet complet : dossier du mod ----------
+export async function buildExportZip(state, opts) {
+  const { terrain: T, objects: O, roads: R } = state;
+  const name = opts.tag || 'MonTerrain';
+  const off = { east: opts.offsetEast ?? 200000, north: opts.offsetNorth ?? 0 };
+  const files = {};
+  const src = `${name}/source/`;
+  files[`${name}/config.cpp`] = strToU8(configCpp(name, T, opts.author));
+  files[`${src}${name}.asc`] = heightmapASC(T, off);
+  if (opts.xyz) files[`${src}${name}.xyz`] = heightmapXYZ(T, off);
+  files[`${src}${name}_mask.png`] = await canvasToPNG(maskCanvas(T, opts.imageScale || 1));
+  files[`${src}layers.cfg`] = strToU8(layersCfg(T.surfaces, name));
+  files[`${src}${name}_sat.png`] = await canvasToPNG(satCanvas(T, opts.imageScale || 1));
+  files[`${src}${name}_objets.txt`] = strToU8(objectsTXT(O.objects, O.library, T, off));
+  const shp = roadsShapefile(R.roads, R, T, off);
+  files[`${name}/data/roads/roads.shp`] = shp.shp;
+  files[`${name}/data/roads/roads.shx`] = shp.shx;
+  files[`${name}/data/roads/roads.dbf`] = shp.dbf;
+  files[`${name}/data/roads/RoadsLib.cfg`] = strToU8(roadsLibCfg(R.types, name));
+  files[`${name}/LISEZMOI.txt`] = strToU8(readme(name, T, off, opts, O.objects.length, R.roads.length));
+  // Les PNG sont déjà compressés ; niveau faible pour rester rapide sur les grandes cartes.
+  return zipSync(files, { level: 3 });
+}
+
+function readme(name, T, off, opts, nObj, nRoads) {
   const px = T.maskRes * (opts.imageScale || 1);
-  return `TerraForge A3 - export pour Terrain Builder
+  return `TerraForge - export pour Terrain Builder
 ==========================================
+
+Décompresse le dossier "${name}" à la racine de ton lecteur P:  (P:\\${name}).
 
 Taille du terrain : ${T.size} m x ${T.size} m
 Grille d'altitude : ${T.N} x ${T.N} points, ${T.cell} m par cellule
@@ -233,18 +307,24 @@ Décalage (Mapframe) : Easting ${off.east}, Northing ${off.north}
 Objets : ${nObj}   Routes : ${nRoads}
 
 Dans Terrain Builder :
-1. Mapframe > Properties : mêmes valeurs de taille de grille, de cellule et d'image
-   que ci-dessus, Easting ${off.east}, Northing ${off.north}.
-2. Heightfield : File > Import > Terrain... > heightmap.asc
-3. Mapframe > Properties > Processing : sat/sat.png en image satellite,
-   mask/mask.png en masque de surface, mask/layers.cfg comme configuration des couches.
+1. Mapframe > Properties : grille ${T.N} x ${T.N}, cellule ${T.cell} m, image ${px} px,
+   Easting ${off.east}, Northing ${off.north}.
+2. Relief : File > Import > Terrain... > source\\${name}.asc
+3. Mapframe > Properties > Processing : source\\${name}_sat.png en image satellite,
+   source\\${name}_mask.png en masque de surface, source\\layers.cfg pour les couches.
    Puis "Generate layers".
-4. Objets : chaque nom de objets_terrain_builder.txt doit exister dans ta bibliothèque TB
+4. Objets : chaque nom de source\\${name}_objets.txt doit exister dans ta bibliothèque TB
    (Templates Library). Puis File > Import > Objects... (format texte
    Name;X;Y;Yaw;Pitch;Roll;Scale;Z).
-5. Routes : Vector layer > Import shapefile > routes/roads.shp. Le champ ID renvoie
-   aux classes RoadXXXX de routes/RoadsLib.cfg à placer dans ton dossier de routes.
-6. Exporte le WRP depuis Terrain Builder puis pack avec Addon Builder / pboProject.
+5. Routes : data\\roads\\roads.shp (polylignes, champ ID) et RoadsLib.cfg.
+   Remplace les textures de RoadsLib.cfg par celles de ton mod ou d'Arma 3.
+6. Exporte le WRP dans P:\\${name}\\${name}.wrp, puis pack le dossier avec
+   Addon Builder ou pboProject.
+
+config.cpp est une base minimale (hérite de Stratis) : complète-la
+(noms de lieux, éclairage, etc.) avant de publier.
+Les chemins .rvmat de layers.cfg pour le jeu "Altis / Stratis" pointent vers
+a3\\map_data : vérifie-les dans ton lecteur P: avant de générer les couches.
 
 Mer : Arma 3 place le niveau de la mer à 0 m. Tout ce qui est sous 0 m sera de l'eau.
 `;

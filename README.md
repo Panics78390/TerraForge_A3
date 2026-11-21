@@ -1,9 +1,10 @@
-# TerraForge A3
+# TerraForge
 
 Éditeur de terrain simplifié pour Arma 3. On voit la carte en 3D en direct, on la modifie au pinceau, puis on exporte des fichiers prêts à importer dans Terrain Builder.
 
 ## Fonctions
 
+- **Assistant « Nouvelle carte »** : nom du mod, taille de carte (repères Stratis, Malden, Tanoa, Altis), style de relief (plat, collines, hauts plateaux, montagnes), curseurs de dénivelé, rugosité, crêtes et érosion, mer et côtes (île, presqu'île, côte, archipel), rivières par sources, volcan, canyon, plateaux, cratère, aperçu 2D et 3D en direct, choix des surfaces (jeu Altis / Stratis ou générique).
 - **Aperçu 3D en temps réel** avec la mer au niveau 0 m, comme dans Arma 3.
 - **Relief** : élever / abaisser, lisser, aplanir à un niveau précis (Ctrl+clic pour prendre une altitude).
 - **Eau** : creuser sous le niveau de la mer avec des berges douces.
@@ -15,15 +16,16 @@
 
 ## Export vers Terrain Builder
 
-Le bouton « Exporter vers Terrain Builder » crée un `.zip` contenant :
+Le bouton « Exporter vers Terrain Builder » crée un `.zip` contenant le dossier du mod, à décompresser sur `P:` :
 
 | Fichier | Rôle |
 | --- | --- |
-| `heightmap.asc` (et `.xyz` en option) | Relief |
-| `sat/sat.png` | Image satellite |
-| `mask/mask.png` + `mask/layers.cfg` | Masque de surface et couches |
-| `objets/objets_terrain_builder.txt` | Objets (`"Nom";X;Y;Yaw;Pitch;Roll;Scale;Z;`) |
-| `routes/roads.shp/.shx/.dbf` + `RoadsLib.cfg` | Routes (polylignes avec champ `ID`) |
+| `config.cpp` | Base de configuration du monde (hérite de Stratis, à compléter) |
+| `source/<nom>.asc` (et `.xyz` en option) | Relief |
+| `source/<nom>_sat.png` | Image satellite |
+| `source/<nom>_mask.png` + `source/layers.cfg` | Masque de surface et couches |
+| `source/<nom>_objets.txt` | Objets (`"Nom";X;Y;Yaw;Pitch;Roll;Scale;Z;`) |
+| `data/roads/roads.shp/.shx/.dbf` + `RoadsLib.cfg` | Routes (polylignes avec champ `ID`) |
 | `LISEZMOI.txt` | Étapes d'import et valeurs du Mapframe |
 
 ## Limites
@@ -32,6 +34,8 @@ Le bouton « Exporter vers Terrain Builder » crée un `.zip` contenant :
 - Les fichiers `.p3d` d'Arma ne sont pas lus. Un modèle importé sert d'aperçu ; c'est le « nom Terrain Builder » saisi qui est exporté, et il doit exister dans ta bibliothèque TB.
 - Les objets de base sont affichés sous forme simplifiée (cônes, sphères, boîtes).
 - Arma 3 n'a d'eau native que sous 0 m : pas de lacs en altitude sans objets d'eau de mods.
+- Les rivières creusent leur vallée et leur lit ; l'eau en altitude demande des objets « étang » dans Arma 3.
+- Les chemins `.rvmat` du jeu de surfaces Altis / Stratis (`a3\map_data`) sont à vérifier sur ton lecteur P:.
 - L'image satellite générée est une base simple (couleurs de surface + ombrage).
 
 ## Lancer

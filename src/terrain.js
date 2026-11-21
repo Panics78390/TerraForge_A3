@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { makeNoise } from './noise.js';
 
 // Convention : la grille a N x N points. heights[j * N + i].
 // i = colonne (vers l'est), j = ligne (j = 0 est le bord NORD, comme dans un fichier ASC).
@@ -21,7 +20,9 @@ export class Terrain {
     }
     this.N = gridSize;
     this.cell = cellSize;
-    this.size = (gridSize - 1) * cellSize;
+    this.size = gridSize * cellSize; // convention Terrain Builder : grille x cellule
+    this.stride = Math.max(1, Math.ceil(gridSize / 1024)); // maillage d'affichage allégé
+    this.M = Math.ceil((gridSize - 1) / this.stride) + 1;
     this.heights = new Float32Array(gridSize * gridSize);
     this.maskRes = maskRes;
     this.surf = new Uint8Array(maskRes * maskRes); // index de surface par pixel
@@ -38,40 +39,47 @@ export class Terrain {
     this.redrawSurface(0, 0, maskRes - 1, maskRes - 1);
   }
 
+  // Indice de grille d'un sommet du maillage d'affichage.
+  gi(a) { return Math.min(a * this.stride, this.N - 1); }
+
   buildMesh() {
-    const N = this.N;
+    const M = this.M;
     const geo = new THREE.BufferGeometry();
-    const pos = new Float32Array(N * N * 3);
-    const uv = new Float32Array(N * N * 2);
-    for (let j = 0; j < N; j++) {
-      for (let i = 0; i < N; i++) {
-        const k = j * N + i;
-        pos[k * 3] = i * this.cell;
-        pos[k * 3 + 1] = this.heights[k];
-        pos[k * 3 + 2] = j * this.cell;
-        uv[k * 2] = i / (N - 1);
-        uv[k * 2 + 1] = 1 - j / (N - 1);
+    const pos = new Float32Array(M * M * 3);
+    const uv = new Float32Array(M * M * 2);
+    for (let b = 0; b < M; b++) {
+      for (let a = 0; a < M; a++) {
+        const k = b * M + a;
+        const x = this.gi(a) * this.cell, z = this.gi(b) * this.cell;
+        pos[k * 3] = x;
+        pos[k * 3 + 2] = z;
+        uv[k * 2] = x / this.size;
+        uv[k * 2 + 1] = 1 - (z + this.cell) / this.size;
       }
     }
-    const idx = new Uint32Array((N - 1) * (N - 1) * 6);
+    const idx = new Uint32Array((M - 1) * (M - 1) * 6);
     let t = 0;
-    for (let j = 0; j < N - 1; j++) {
-      for (let i = 0; i < N - 1; i++) {
-        const a = j * N + i, b = a + 1, c = a + N, d = c + 1;
+    for (let j = 0; j < M - 1; j++) {
+      for (let i = 0; i < M - 1; i++) {
+        const a = j * M + i, b = a + 1, c = a + M, d = c + 1;
         idx[t++] = a; idx[t++] = c; idx[t++] = b;
         idx[t++] = b; idx[t++] = c; idx[t++] = d;
       }
     }
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(N * N * 3), 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(M * M * 3), 3));
     geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
     geo.setIndex(new THREE.BufferAttribute(idx, 1));
+    geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(this.size / 2, 0, this.size / 2), this.size * 2);
     const mat = new THREE.MeshStandardMaterial({ map: this.texture, roughness: 0.95, metalness: 0 });
     this.mesh = new THREE.Mesh(geo, mat);
-    this.mesh.receiveShadow = true;
+    this.mesh.frustumCulled = false;
     this.scene.add(this.mesh);
-    this.updateHeights(0, 0, N - 1, N - 1);
+    this.updateHeights(0, 0, this.N - 1, this.N - 1);
   }
+
+  // Coordonnée nord (Y Arma) d'une position z du monde 3D.
+  north(z) { return (this.N - 1) * this.cell - z; }
 
   // ---- Altitudes ----
   h(i, j) {
@@ -95,27 +103,29 @@ export class Terrain {
 
   // Met à jour la géométrie (positions + normales) sur un rectangle de la grille.
   updateHeights(i0, j0, i1, j1) {
-    const N = this.N, c = this.cell;
-    i0 = Math.max(0, i0 - 1); j0 = Math.max(0, j0 - 1);
-    i1 = Math.min(N - 1, i1 + 1); j1 = Math.min(N - 1, j1 + 1);
+    const M = this.M, st = this.stride, c = this.cell;
+    const a0 = Math.max(0, Math.floor(i0 / st) - 1), a1 = Math.min(M - 1, Math.ceil(i1 / st) + 1);
+    const b0 = Math.max(0, Math.floor(j0 / st) - 1), b1 = Math.min(M - 1, Math.ceil(j1 / st) + 1);
     const pos = this.mesh.geometry.attributes.position;
     const nor = this.mesh.geometry.attributes.normal;
     const P = pos.array, NA = nor.array;
-    for (let j = j0; j <= j1; j++) {
-      for (let i = i0; i <= i1; i++) {
-        const k = j * N + i;
-        P[k * 3 + 1] = this.heights[k];
-        const nx = this.h(i - 1, j) - this.h(i + 1, j);
-        const nz = this.h(i, j - 1) - this.h(i, j + 1);
-        const ny = 2 * c;
+    for (let b = b0; b <= b1; b++) {
+      const j = this.gi(b);
+      for (let a = a0; a <= a1; a++) {
+        const i = this.gi(a);
+        const k = b * M + a;
+        P[k * 3 + 1] = this.heights[j * this.N + i];
+        const nx = this.h(i - st, j) - this.h(i + st, j);
+        const nz = this.h(i, j - st) - this.h(i, j + st);
+        const ny = 2 * c * st;
         const len = Math.hypot(nx, ny, nz);
         NA[k * 3] = nx / len; NA[k * 3 + 1] = ny / len; NA[k * 3 + 2] = nz / len;
       }
     }
+    const start = b0 * M * 3, count = (b1 - b0 + 1) * M * 3;
+    pos.addUpdateRange(start, count); nor.addUpdateRange(start, count);
     pos.needsUpdate = true;
     nor.needsUpdate = true;
-    this.mesh.geometry.computeBoundingSphere();
-    this.mesh.geometry.computeBoundingBox();
   }
 
   // Applique une fonction à chaque point de grille dans le cercle (x,z,r).
@@ -161,24 +171,6 @@ export class Terrain {
     this.updateHeights(i0, j0, i1, j1);
   }
 
-  generate({ seed = 1, amplitude = 120, scale = 1, base = 20, island = true }) {
-    const { fbm } = makeNoise(seed);
-    const N = this.N;
-    for (let j = 0; j < N; j++)
-      for (let i = 0; i < N; i++) {
-        const u = i / (N - 1), v = j / (N - 1);
-        let h = fbm(u * 6 * scale, v * 6 * scale, 6);
-        h = base + h * amplitude * 1.6;
-        if (island) {
-          const d = Math.hypot(u - 0.5, v - 0.5) * 2;
-          const m = Math.max(0, 1 - Math.pow(d, 2.2));
-          h = Math.max(h, base * 0.4) * m + (m - 0.3) * amplitude * 0.6;
-        }
-        this.heights[j * N + i] = h;
-      }
-    this.updateHeights(0, 0, N - 1, N - 1);
-  }
-
   flatAll(h = 10) {
     this.heights.fill(h);
     this.updateHeights(0, 0, this.N - 1, this.N - 1);
@@ -201,13 +193,18 @@ export class Terrain {
 
   // ---- Surfaces (masque) ----
   worldToMask(x, z) {
-    return [(x / this.size) * (this.maskRes - 1), (z / this.size) * (this.maskRes - 1)];
+    return [(x / this.size) * this.maskRes, ((z + this.cell) / this.size) * this.maskRes];
+  }
+
+  // Centre d'un pixel du masque -> position dans le monde 3D.
+  maskToWorld(px, py) {
+    return [((px + 0.5) / this.maskRes) * this.size, ((py + 0.5) / this.maskRes) * this.size - this.cell];
   }
 
   paintSurface(x, z, r, idx, hardness = 1, rnd = Math.random) {
     const R = this.maskRes;
     const [px, pz] = this.worldToMask(x, z);
-    const pr = (r / this.size) * (R - 1);
+    const pr = Math.max(0.75, (r / this.size) * R);
     const x0 = Math.max(0, Math.floor(px - pr)), x1 = Math.min(R - 1, Math.ceil(px + pr));
     const y0 = Math.max(0, Math.floor(pz - pr)), y1 = Math.min(R - 1, Math.ceil(pz + pr));
     for (let y = y0; y <= y1; y++)
@@ -240,7 +237,7 @@ export class Terrain {
   // ---- Lancer de rayon contre la grille d'altitude ----
   raycast(ray) {
     const o = ray.origin, d = ray.direction;
-    const step = this.cell * 0.5;
+    const step = this.cell * 0.75;
     const maxDist = this.size * 3;
     let prevT = 0;
     let above = o.y - this.heightAt(o.x, o.z) > 0;

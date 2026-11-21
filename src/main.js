@@ -6,7 +6,9 @@ import { ObjectManager, DEFAULT_LIBRARY } from './objects.js';
 import { RoadManager } from './roads.js';
 import { buildExportZip, parseASC } from './exporters.js';
 import { saveProject, loadProject } from './project.js';
-import { mulberry32 } from './noise.js';
+import { mulberry32, makeNoise } from './noise.js';
+import { openWizard, LOGO } from './wizard.js';
+import { generate, defaultParams } from './gen.js';
 
 // ======================================================================
 // Scène
@@ -35,11 +37,11 @@ sun.position.set(-3000, 5000, -2000);
 scene.add(sun);
 
 const state = {
-  settings: { radius: 60, strength: 0.5, falloff: 0.6 },
+  settings: { radius: 60, strength: 0.5, falloff: 0.6, name: 'MonTerrain', author: '' },
   tool: 'raise',
 };
 
-const terrain = new Terrain(scene, { gridSize: 513, cellSize: 10, maskRes: 1024, surfaces: DEFAULT_SURFACES.map((s) => ({ ...s })) });
+const terrain = new Terrain(scene, { gridSize: 512, cellSize: 8, maskRes: 1024, surfaces: DEFAULT_SURFACES.map((s) => ({ ...s })) });
 const objects = new ObjectManager(scene, terrain);
 const roads = new RoadManager(scene, terrain);
 state.terrain = terrain; state.objects = objects; state.roads = roads;
@@ -83,7 +85,9 @@ function snapshot(kind) {
 }
 function pushUndo(kind) {
   undoStack.push(snapshot(kind));
-  if (undoStack.length > 30) undoStack.shift();
+  // Limite la mémoire : une grille 2048 pèse 16 Mo par étape d'annulation.
+  const maxUndo = Math.max(3, Math.min(30, Math.floor(250e6 / (terrain.heights.byteLength + terrain.surf.byteLength))));
+  while (undoStack.length > maxUndo) undoStack.shift();
   redoStack.length = 0;
   dirtyProject = true;
 }
@@ -712,42 +716,89 @@ function download(bytes, name, type = 'application/octet-stream') {
 // ======================================================================
 // Menu principal
 // ======================================================================
-async function doNew() {
-  const v = await formDialog('Nouveau terrain', [
-    { key: 'grid', label: 'Grille d\'altitude', type: 'select', value: 513, options: [[257, '256 × 256'], [513, '512 × 512'], [1025, '1024 × 1024'], [2049, '2048 × 2048 (lourd)']] },
-    { key: 'cell', label: 'Taille de cellule (m)', type: 'number', value: 10, step: 0.5 },
-    { key: 'mask', label: 'Résolution sat/masque', type: 'select', value: 1024, options: [[1024, '1024 px'], [2048, '2048 px'], [4096, '4096 px (lourd)']] },
-    { key: 'relief', label: 'Relief de départ', type: 'select', value: 'island', options: [['island', 'Île générée'], ['hills', 'Collines générées'], ['flat', 'Plat (10 m)']] },
-    { key: 'seed', label: 'Graine (variante)', type: 'number', value: Math.floor(Math.random() * 9999) },
-  ], 'Taille du terrain = (grille − 1) × cellule. Exemple : 512 × 10 m = 5,12 km.', 'Créer');
-  if (!v) return;
-  if (dirtyProject && !confirmBox('Les modifications non enregistrées seront perdues. Continuer ?')) return;
-  const keepObjects = objects.library;
-  terrain.init(+v.grid, +v.cell || 10, +v.mask);
-  if (v.relief === 'flat') terrain.flatAll(10);
-  else terrain.generate({ seed: +v.seed || 1, amplitude: 140, island: v.relief === 'island' });
-  autoPaint();
+const busyEl = document.createElement('div');
+busyEl.id = 'busy';
+document.body.append(busyEl);
+async function busy(msg, fn) {
+  busyEl.innerHTML = `<div>${LOGO}<p>${msg}</p></div>`;
+  busyEl.classList.add('show');
+  await new Promise((r) => setTimeout(r, 60));
+  try { return await fn(); } finally { busyEl.classList.remove('show'); }
+}
+
+async function doNew(first = false) {
+  const cfg = await openWizard();
+  if (!cfg) return false;
+  if (!first && dirtyProject && !confirmBox('Les modifications non enregistrées seront perdues. Continuer ?')) return false;
+  await busy('Création de la carte…', () => createMap(cfg));
+  return true;
+}
+
+function createMap(cfg) {
+  terrain.surfaces = cfg.surfaces;
+  terrain.init(cfg.grid, cfg.cell, cfg.maskRes);
+  const { heights, rivers } = generate(cfg.params, cfg.grid, terrain.size);
+  terrain.heights.set(heights);
+  terrain.updateHeights(0, 0, terrain.N - 1, terrain.N - 1);
+  if (cfg.params.paint) autoPaint(cfg.params.seed); else { terrain.surf.fill(0); terrain.redrawSurface(0, 0, terrain.maskRes - 1, terrain.maskRes - 1); }
+  // Lit des rivières
+  const bed = surfaceByRole('gravel', 'dirt');
+  if (cfg.params.paint && bed >= 0)
+    for (const riv of rivers) for (let k = 0; k < riv.length - 1; k++) {
+      const [x0, z0] = riv[k], [x1, z1] = riv[k + 1];
+      const px = terrain.size / terrain.maskRes;
+      const n = Math.max(1, Math.ceil(Math.hypot(x1 - x0, z1 - z0) / px));
+      for (let q = 0; q < n; q++) {
+        const x = x0 + ((x1 - x0) * q) / n, z = z0 + ((z1 - z0) * q) / n;
+        if (terrain.heightAt(x, z) > 0.3) terrain.paintSurface(x, z, Math.max(cfg.params.rivers.width * 0.6, px * 1.2), bed, 1);
+      }
+    }
+  state.settings.name = cfg.name;
+  state.settings.author = cfg.author;
+  toolSettings.surface = 0;
   objects.setObjects([]);
-  objects.library = keepObjects;
   roads.roads = []; roads.rebuild();
   undoStack.length = redoStack.length = 0;
   dirtyProject = false;
   resetView(); renderPanel(); updateInfo();
+  document.title = `${cfg.name} · TerraForge`;
 }
 
-// Peinture automatique de départ : sable près de l'eau, roche sur les pentes.
-function autoPaint() {
+function surfaceByRole(...roles) {
+  for (const r of roles) {
+    const i = terrain.surfaces.findIndex((s) => s.role === r);
+    if (i >= 0) return i;
+  }
+  return -1;
+}
+
+// Peinture automatique : plage près de l'eau, roche et terre sur les pentes,
+// herbe ailleurs avec des plaques d'herbe sèche et de sous-bois.
+function autoPaint(seed = 1) {
   const R = terrain.maskRes;
+  const or0 = (i) => (i < 0 ? 0 : i);
+  const grass = or0(surfaceByRole('grass'));
+  const sand = or0(surfaceByRole('sand', 'gravel'));
+  const rock = or0(surfaceByRole('rock', 'gravel'));
+  const dirt = or0(surfaceByRole('dirt', 'gravel'));
+  const dry = or0(surfaceByRole('drygrass', 'grass'));
+  const forest = or0(surfaceByRole('forest', 'grass'));
+  const seabed = or0(surfaceByRole('seabed', 'sand'));
+  const { fbm } = makeNoise(seed);
   for (let y = 0; y < R; y++)
     for (let x = 0; x < R; x++) {
-      const wx = (x / (R - 1)) * terrain.size, wz = (y / (R - 1)) * terrain.size;
+      const [wx, wz] = terrain.maskToWorld(x, y);
       const h = terrain.heightAt(wx, wz);
       const sl = terrain.slopeAt(wx, wz);
-      let s = 0;
-      if (h < 2.5) s = 4;
-      else if (sl > 32) s = 5;
-      else if (sl > 22) s = 3;
-      else if (h > 120) s = 1;
+      let s = grass;
+      if (h < -1.5) s = seabed;
+      else if (h < 2.5) s = sand;
+      else if (sl > 34) s = rock;
+      else if (sl > 23) s = dirt;
+      else {
+        const n = fbm(wx / 420, wz / 420, 3);
+        if (n > 0.28) s = dry; else if (n < -0.3) s = forest;
+      }
       terrain.surf[y * R + x] = s;
     }
   terrain.redrawSurface(0, 0, R - 1, R - 1);
@@ -755,7 +806,7 @@ function autoPaint() {
 
 async function doSave() {
   const bytes = saveProject(state);
-  download(bytes, 'mon_terrain.tfa3');
+  download(bytes, `${state.settings.name || 'terrain'}.tfa3`);
   dirtyProject = false;
   toast('Projet enregistré (fichier .tfa3)');
 }
@@ -777,6 +828,7 @@ async function doOpen() {
     roads.roads = json.roads || [];
     roads.rebuild();
     if (json.settings) Object.assign(state.settings, json.settings);
+    document.title = `${state.settings.name} · TerraForge`;
     undoStack.length = redoStack.length = 0;
     dirtyProject = false;
     resetView(); renderPanel(); updateInfo();
@@ -820,18 +872,17 @@ async function doImportHeightmap() {
 
 async function doExport() {
   const v = await formDialog('Exporter vers Terrain Builder', [
-    { key: 'tag', label: 'Nom du mod / dossier', value: 'monterrain' },
+    { key: 'tag', label: 'Nom de la carte / du mod', value: state.settings.name || 'MonTerrain' },
     { key: 'offsetEast', label: 'Easting (décalage X)', type: 'number', value: 200000 },
     { key: 'offsetNorth', label: 'Northing (décalage Y)', type: 'number', value: 0 },
     { key: 'imageScale', label: 'Agrandir sat/masque', type: 'select', value: 1, options: [[1, `×1 (${terrain.maskRes} px)`], [2, `×2 (${terrain.maskRes * 2} px)`], [4, `×4 (${terrain.maskRes * 4} px)`]] },
     { key: 'xyz', label: 'Ajouter aussi un fichier XYZ', type: 'checkbox', value: false },
-  ], 'Crée un .zip avec le relief (ASC), le masque et l\'image satellite (PNG), layers.cfg, la liste des objets (TXT), les routes (shapefile + RoadsLib.cfg) et un mode d\'emploi.', 'Exporter');
+  ], 'Crée un .zip contenant le dossier du mod à décompresser sur P: : config.cpp, relief (ASC), image satellite et masque (PNG), layers.cfg, liste des objets, routes et mode d\'emploi.', 'Exporter');
   if (!v) return;
-  toast('Export en cours…', 8000);
-  await new Promise((r) => setTimeout(r, 50));
+  const name = (v.tag || 'MonTerrain').trim().replace(/[^A-Za-z0-9_]/g, '_');
   try {
-    const zip = await buildExportZip(state, { ...v, imageScale: +v.imageScale });
-    download(zip, `${v.tag || 'terrain'}_terrainbuilder.zip`, 'application/zip');
+    const zip = await busy('Export en cours…', () => buildExportZip(state, { ...v, tag: name, author: state.settings.author, imageScale: +v.imageScale }));
+    download(zip, `${name}_terraforge.zip`, 'application/zip');
     toast('Export terminé');
   } catch (err) {
     console.error(err);
@@ -840,21 +891,22 @@ async function doExport() {
 }
 
 function doHelp() {
-  alertDialog('Aide TerraForge A3', `
+  alertDialog('Aide TerraForge', `
   <ul>
     <li><b>Vue</b> : clic droit pour tourner, clic molette pour déplacer, molette pour zoomer.</li>
     <li><b>Touches 1 à 9, 0</b> : changer d'outil. <b>[ ]</b> : taille du pinceau. <b>Ctrl+Z / Ctrl+Y</b> : annuler / rétablir. <b>Ctrl+S</b> : enregistrer.</li>
     <li><b>Relief</b> : clic pour monter, Maj+clic pour descendre. <b>Aplanir</b> : Ctrl+clic pour prendre l'altitude.</li>
     <li><b>Forêt</b> : règle le mélange d'essences, la densité et l'échelle, puis peins. Maj pour gommer.</li>
     <li><b>Routes</b> : clic pour poser des points, double-clic pour terminer.</li>
-    <li><b>Exporter</b> produit un .zip prêt à importer dans Terrain Builder ; le fichier LISEZMOI.txt explique chaque étape.</li>
+    <li><b>Nouveau terrain</b> ouvre l'assistant : taille, style de relief, mer, rivières, volcan, canyon, surfaces.</li>
+    <li><b>Exporter</b> produit un .zip contenant le dossier du mod, à décompresser sur P: ; le fichier LISEZMOI.txt explique chaque étape.</li>
   </ul>
   <p class="note">La compilation finale du terrain (WRP + PBO) se fait toujours avec les outils Arma 3 (Terrain Builder, Addon Builder ou pboProject).</p>`);
 }
 
 document.getElementById('topbar').addEventListener('click', (e) => {
   const a = e.target.closest('button')?.dataset.action;
-  ({ new: doNew, open: doOpen, save: doSave, 'import-hm': doImportHeightmap, export: doExport, undo, redo, help: doHelp })[a]?.();
+  ({ new: () => doNew(), open: doOpen, save: doSave, 'import-hm': doImportHeightmap, export: doExport, undo, redo, help: doHelp })[a]?.();
 });
 window.addEventListener('beforeunload', (e) => { if (dirtyProject) { e.preventDefault(); e.returnValue = ''; } });
 
@@ -865,7 +917,7 @@ const stPos = document.getElementById('st-pos');
 const stInfo = document.getElementById('st-info');
 function updateStatus() {
   if (!hover) { stPos.textContent = '—'; return; }
-  stPos.textContent = `X ${hover.x.toFixed(0)}  Y ${(terrain.size - hover.z).toFixed(0)}  Alt. ${hover.y.toFixed(1)} m  Pente ${terrain.slopeAt(hover.x, hover.z).toFixed(0)}°`;
+  stPos.textContent = `X ${hover.x.toFixed(0)}  Y ${terrain.north(hover.z).toFixed(0)}  Alt. ${hover.y.toFixed(1)} m  Pente ${terrain.slopeAt(hover.x, hover.z).toFixed(0)}°`;
 }
 function updateInfo() {
   stInfo.textContent = `${objects.objects.length.toLocaleString('fr-FR')} objets · ${roads.roads.length} routes`;
@@ -890,13 +942,15 @@ function esc(s) {
 // Démarrage
 // ======================================================================
 (async function start() {
-  terrain.generate({ seed: 7, amplitude: 140, island: true });
-  autoPaint();
   await objects.setLibrary(DEFAULT_LIBRARY.map((e) => ({ ...e })));
   resize();
-  resetView();
   setTool('raise');
-  updateInfo();
+  createMap({ name: 'MonTerrain', author: '', grid: 512, cell: 8, maskRes: 1024, surfaces: terrain.surfaces, params: defaultParams() });
   loop();
   window.__tf = state; // pratique pour le débogage dans la console
+  window.__tfCreate = createMap;
+  window.__tfDefaults = defaultParams;
+  if (!new URLSearchParams(location.search).has('nowizard')) doNew(true);
 })();
+
+document.getElementById('brand').insertAdjacentHTML('afterbegin', LOGO);
