@@ -13,7 +13,12 @@ const ELEV_URL = (z, x, y) => `https://s3.amazonaws.com/elevation-tiles-prod/ter
 // Sentinel-2 cloudless 2016 par EOX (licence CC BY 4.0), environ 10 m par pixel.
 const SAT_URL = (z, x, y) => `https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless_3857/default/g/${z}/${y}/${x}.jpg`;
 export const SAT_CREDIT = 'Sentinel-2 cloudless - https://s2maps.eu by EOX IT Services GmbH (Contains modified Copernicus Sentinel data 2016)';
-const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter'];
+const OVERPASS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+];
 const M_LAT = 111320;
 const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 
@@ -348,43 +353,66 @@ export async function fetchSatellite(cfg, R, progress = () => {}) {
 }
 
 // ---------- OpenStreetMap ----------
+// La demande est découpée (routes, occupation du sol, bâtiments par quart de carte)
+// pour rester légère : les serveurs Overpass publics refusent les grosses requêtes.
+// Renvoie { elements, failed: [noms des parties manquantes] }.
 export async function fetchOSM(cfg, progress = () => {}) {
-  const [[s, w], [n, e]] = boundsOf(cfg.lat, cfg.lon, cfg.grid * cfg.cell);
-  const bb = `(${s.toFixed(6)},${w.toFixed(6)},${n.toFixed(6)},${e.toFixed(6)})`;
-  const parts = [];
-  if (cfg.roads || cfg.paths) parts.push(`way["highway"]${bb};`);
-  if (cfg.buildings) parts.push(`way["building"]${bb};`);
-  if (cfg.landuse || cfg.trees) {
-    parts.push(`way["natural"~"^(wood|water|scrub|heath|beach|sand|bare_rock|scree|wetland)$"]${bb};`);
-    parts.push(`way["landuse"~"^(forest|farmland|meadow|grass|orchard|vineyard|industrial|commercial|retail|quarry|reservoir|basin)$"]${bb};`);
-    parts.push(`way["waterway"="riverbank"]${bb};`);
-    parts.push(`relation["type"="multipolygon"]["natural"~"^(wood|water|scrub|wetland)$"]${bb};`);
-    parts.push(`relation["type"="multipolygon"]["landuse"~"^(forest|farmland|meadow|reservoir)$"]${bb};`);
+  const S = cfg.grid * cfg.cell;
+  const [[s, w], [n, e]] = boundsOf(cfg.lat, cfg.lon, S);
+  const box = (s0, w0, n0, e0) => `(${s0.toFixed(6)},${w0.toFixed(6)},${n0.toFixed(6)},${e0.toFixed(6)})`;
+  const bb = box(s, w, n, e);
+  const tasks = [];
+  if (cfg.roads || cfg.paths) tasks.push({ name: 'routes', q: `way["highway"]${bb};` });
+  if (cfg.landuse || cfg.trees) tasks.push({
+    name: 'forêts et occupation du sol',
+    q: `way["natural"~"^(wood|water|scrub|heath|beach|sand|bare_rock|scree|wetland)$"]${bb};` +
+       `way["landuse"~"^(forest|farmland|meadow|grass|orchard|vineyard|industrial|commercial|retail|quarry|reservoir|basin)$"]${bb};` +
+       `relation["type"="multipolygon"]["natural"~"^(wood|water|scrub|wetland)$"]${bb};` +
+       `relation["type"="multipolygon"]["landuse"~"^(forest|farmland|meadow|reservoir)$"]${bb};`,
+  });
+  if (cfg.buildings) {
+    const k = S > 9000 ? 4 : S > 5000 ? 3 : 2;
+    for (let a = 0; a < k; a++) for (let b = 0; b < k; b++)
+      tasks.push({
+        name: `bâtiments (zone ${a * k + b + 1}/${k * k})`,
+        q: `way["building"]${box(s + ((n - s) * a) / k, w + ((e - w) * b) / k, s + ((n - s) * (a + 1)) / k, w + ((e - w) * (b + 1)) / k)};`,
+      });
   }
-  if (!parts.length) return { elements: [] };
-  const query = `[out:json][timeout:60];(${parts.join('')});out geom;`;
-  let lastErr;
-  for (let n = 0; n < OVERPASS.length; n++) {
-    const ctl = new AbortController();
-    const t0 = Date.now();
-    const label = `OpenStreetMap : téléchargement des routes, forêts et bâtiments (serveur ${n + 1} sur ${OVERPASS.length})`;
-    const timer = setInterval(() => {
-      const sec = Math.round((Date.now() - t0) / 1000);
-      progress(`${label}… ${sec} s`);
-      if (sec >= 75) ctl.abort();
-    }, 1000);
-    try {
+  const seen = new Set(), elements = [], failed = [];
+  let server = 0;
+  for (let t = 0; t < tasks.length; t++) {
+    const task = tasks[t];
+    const query = `[out:json][timeout:40];(${task.q});out geom;`;
+    let ok = false;
+    for (let attempt = 0; attempt < 4 && !ok; attempt++) {
+      const ctl = new AbortController();
+      const t0 = Date.now();
+      const label = `OpenStreetMap ${t + 1}/${tasks.length} : ${task.name}${attempt ? ` (essai ${attempt + 1})` : ''}`;
       progress(`${label}…`);
-      const r = await fetch(OVERPASS[n], { method: 'POST', signal: ctl.signal, body: 'data=' + encodeURIComponent(query), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-      if (!r.ok) throw new Error(`serveur occupé, code ${r.status}`);
-      const json = await r.json();
-      if (json.remark && !(json.elements || []).length) throw new Error(json.remark);
-      return json;
-    } catch (err) {
-      lastErr = err.name === 'AbortError' ? new Error('pas de réponse après 75 secondes') : err;
-    } finally { clearInterval(timer); }
+      const timer = setInterval(() => {
+        const sec = Math.round((Date.now() - t0) / 1000);
+        progress(`${label}… ${sec} s`);
+        if (sec >= 50) ctl.abort();
+      }, 1000);
+      try {
+        const r = await fetch(OVERPASS[server % OVERPASS.length], { method: 'POST', signal: ctl.signal, body: 'data=' + encodeURIComponent(query), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+        if (!r.ok) throw new Error(r.status);
+        const json = await r.json();
+        if (json.remark && !(json.elements || []).length) throw new Error(json.remark);
+        for (const el of json.elements || []) {
+          const key = el.type[0] + el.id;
+          if (!seen.has(key)) { seen.add(key); elements.push(el); }
+        }
+        ok = true;
+      } catch (err) {
+        console.warn('Overpass', OVERPASS[server % OVERPASS.length], err);
+        server++; // serveur suivant
+        await new Promise((res) => setTimeout(res, 1500));
+      } finally { clearInterval(timer); }
+    }
+    if (!ok) failed.push(task.name);
   }
-  throw lastErr;
+  return { elements, failed };
 }
 
 const ROAD_TYPES = {

@@ -746,8 +746,9 @@ async function doGeo() {
       const heights = cfg.relief ? await fetchElevation(cfg, setBusy) : null;
       let osm = { roads: [], buildings: [], areas: [] };
       if (cfg.roads || cfg.paths || cfg.landuse || cfg.trees || cfg.buildings) {
-        try { osm = parseOSM(await fetchOSM(cfg, setBusy), cfg); }
-        catch (err) { console.error(err); warning += `Les données OpenStreetMap n'ont pas pu être téléchargées (${err.message || err}). La carte a été créée avec le relief seul ; réessaie plus tard ou avec une zone plus petite.`; }
+        const raw = await fetchOSM(cfg, setBusy);
+        osm = parseOSM(raw, cfg);
+        if (raw.failed.length) warning += `Les serveurs OpenStreetMap étaient saturés pour : ${raw.failed.join(', ')}. Le reste a été importé. Relance « Monde réel » dans quelques minutes pour avoir tout.`;
       }
       let sat = null;
       if (cfg.satellite) {
