@@ -517,7 +517,16 @@ export function parseOSM(json, cfg) {
         }
         cx /= pts.length - 1; cz /= pts.length - 1; area = Math.abs(area) / 2;
         if (area < 12 || !inside([cx, cz])) continue;
-        buildings.push({ x: cx, z: cz, rot: -ang, area });
+        // Emprise orientée : longueur le long du plus grand côté, largeur en travers.
+        const ca = Math.cos(ang), sa = Math.sin(ang);
+        let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity;
+        for (const [x, z] of pts) {
+          const u = (x - cx) * ca + (z - cz) * sa, v = -(x - cx) * sa + (z - cz) * ca;
+          if (u < u0) u0 = u; if (u > u1) u1 = u; if (v < v0) v0 = v; if (v > v1) v1 = v;
+        }
+        // recentre sur le milieu de l'emprise
+        const mu = (u0 + u1) / 2, mv = (v0 + v1) / 2;
+        buildings.push({ x: cx + mu * ca - mv * sa, z: cz + mu * sa + mv * ca, rot: -ang, area, len: u1 - u0, wid: v1 - v0 });
       } else {
         const cls = landClass(t);
         if (cls && pts.length >= 3) areas.push({ cls, rings: [pts] });

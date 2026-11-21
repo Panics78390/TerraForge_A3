@@ -1020,6 +1020,73 @@ async function doGeo() {
   else toast(`Carte créée : ${roads.roads.length} routes, ${objects.objects.length.toLocaleString('fr-FR')} objets`, 4000);
 }
 
+// Demi-emprise au sol (x, z) d'un modèle de la bibliothèque.
+function footprint(id) {
+  const g = objects.groups.get(id);
+  const box = new THREE.Box3(), tmp = new THREE.Box3();
+  if (g) for (const p of g.parts) {
+    if (!p.geometry.boundingBox) p.geometry.computeBoundingBox();
+    box.union(tmp.copy(p.geometry.boundingBox).applyMatrix4(p.matrix));
+  }
+  if (box.isEmpty()) return { hx: 5, hz: 3.5, cx: 0, cz: 0 };
+  return { hx: Math.max(0.5, (box.max.x - box.min.x) / 2), hz: Math.max(0.5, (box.max.z - box.min.z) / 2) };
+}
+
+// Pose une maison par bâtiment OSM, sans chevauchement entre maisons ni avec les routes.
+// Chaque maison est mise à l'échelle pour tenir dans l'emprise réelle du bâtiment ;
+// si elle touche encore une voisine ou une route, on la réduit, sinon on l'abandonne.
+function placeBuildings(osm, libId) {
+  const fp = footprint(libId);
+  const CELL = 24, GAP = 0.6;
+  const grid = new Map();   // rectangles posés
+  const rgrid = new Map();  // points de route { x, z, r }
+  const key = (x, z) => Math.floor(x / CELL) + ',' + Math.floor(z / CELL);
+  const put = (g, x, z, v) => { const k = key(x, z); let a = g.get(k); if (!a) g.set(k, (a = [])); a.push(v); };
+  const near = (g, x, z, r, out = []) => {
+    for (let gx = Math.floor((x - r) / CELL); gx <= Math.floor((x + r) / CELL); gx++)
+      for (let gz = Math.floor((z - r) / CELL); gz <= Math.floor((z + r) / CELL); gz++) { const a = g.get(gx + ',' + gz); if (a) for (const v of a) out.push(v); }
+    return out;
+  };
+  for (const r of osm.roads) {
+    const t = roads.types.find((x) => x.id === r.type);
+    const hw = (t ? t.width : 5) / 2;
+    for (const p of roads.sample(r, 3)) put(rgrid, p.x, p.z, { x: p.x, z: p.z, r: hw });
+  }
+  // rectangle orienté : centre, axes, demi-tailles (rot autour de Y comme dans la scène)
+  const rect = (x, z, rot, s) => { const c = Math.cos(rot), sn = Math.sin(rot); return { x, z, ax: c, az: -sn, bx: sn, bz: c, hx: fp.hx * s, hz: fp.hz * s }; };
+  const inRect = (R, x, z, m) => { const dx = x - R.x, dz = z - R.z; return Math.abs(dx * R.ax + dz * R.az) <= R.hx + m && Math.abs(dx * R.bx + dz * R.bz) <= R.hz + m; };
+  const overlap = (A, B) => {
+    const dx = B.x - A.x, dz = B.z - A.z;
+    for (const [ux, uz] of [[A.ax, A.az], [A.bx, A.bz], [B.ax, B.az], [B.bx, B.bz]]) {
+      const ra = A.hx * Math.abs(A.ax * ux + A.az * uz) + A.hz * Math.abs(A.bx * ux + A.bz * uz);
+      const rb = B.hx * Math.abs(B.ax * ux + B.az * uz) + B.hz * Math.abs(B.bx * ux + B.bz * uz);
+      if (Math.abs(dx * ux + dz * uz) > ra + rb + GAP) return false;
+    }
+    return true;
+  };
+  const free = (R) => {
+    const rad = Math.hypot(R.hx, R.hz);
+    for (const o of near(grid, R.x, R.z, rad + 40)) if (overlap(R, o)) return false;
+    for (const p of near(rgrid, R.x, R.z, rad + 8)) if (inRect(R, p.x, p.z, p.r + 0.5)) return false;
+    return true;
+  };
+  const list = [];
+  let skipped = 0;
+  const sorted = osm.buildings.slice(0, 20000).sort((a, b) => b.area - a.area);
+  for (const b of sorted) {
+    const len = b.len || Math.sqrt(b.area) * 1.2, wid = b.wid || Math.sqrt(b.area) / 1.2;
+    // la maison doit tenir dans l'emprise réelle (même échelle sur les deux axes)
+    let s = Math.min(2.5, Math.max(0.5, Math.min(len / (2 * fp.hx), wid / (2 * fp.hz))));
+    let ok = null;
+    for (let k = 0; k < 5 && s >= 0.45; k++, s *= 0.85) { const R = rect(b.x, b.z, b.rot, s); if (free(R)) { ok = R; break; } }
+    if (!ok) { skipped++; continue; }
+    put(grid, ok.x, ok.z, ok);
+    list.push({ lib: libId, x: b.x, z: b.z, rot: b.rot, scale: +(ok.hx / fp.hx).toFixed(3) });
+  }
+  const hits = (x, z, m) => { for (const o of near(grid, x, z, 45)) if (inRect(o, x, z, m)) return true; return false; };
+  return { list, skipped, hits };
+}
+
 async function buildGeoMap(cfg, heights, osm, sat = null) {
   terrain.surfaces = SURFACE_SETS.altis.surfaces.map((s) => ({ ...s }));
   terrain.init(cfg.grid, cfg.cell, cfg.maskRes);
@@ -1054,8 +1121,8 @@ async function buildGeoMap(cfg, heights, osm, sat = null) {
     if (d) await objects.addLibraryEntry({ ...d }, false);
   }
   // Bâtiments
-  for (const b of osm.buildings.slice(0, 20000))
-    list.push({ lib: 'house', x: b.x, z: b.z, rot: b.rot, scale: Math.min(2.5, Math.max(0.6, Math.sqrt(b.area) / 9)) });
+  const placed = placeBuildings(osm, 'house');
+  for (const p of placed.list) list.push(p);
   // Arbres dans les forêts
   if (cfg.trees && forestMask) {
     let cells = 0;
@@ -1070,6 +1137,7 @@ async function buildGeoMap(cfg, heights, osm, sat = null) {
       const [wx, wz] = terrain.maskToWorld(k % R, Math.floor(k / R));
       const x = wx + (rnd() - 0.5) * px, z = wz + (rnd() - 0.5) * px;
       if (!terrain.inside(x, z) || terrain.heightAt(x, z) < 0.5 || terrain.slopeAt(x, z) > 42) continue;
+      if (placed.hits(x, z, 2.5)) continue; // pas d'arbre dans une maison
       let v = rnd() * 6, id = mix[0][0];
       for (const [i, w] of mix) { v -= w; if (v <= 0) { id = i; break; } }
       list.push({ lib: id, x, z, rot: rnd() * Math.PI * 2, scale: 0.8 + rnd() * 0.5 });
@@ -1323,7 +1391,7 @@ function esc(s) {
   loop();
   window.__tf = state; // pratique pour le débogage dans la console
   window.__tfCreate = createMap;
-  window.__tfGeo = { buildGeoMap, fetchElevation, parseOSM };
+  window.__tfGeo = { buildGeoMap, fetchElevation, parseOSM, placeBuildings };
   window.__tfDefaults = defaultParams;
   window.__tfA3 = { a3, connectA3, useA3Model, camera, controls };
   if (!new URLSearchParams(location.search).has('nowizard')) doNew(true);
