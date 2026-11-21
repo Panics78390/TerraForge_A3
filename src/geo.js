@@ -1,6 +1,7 @@
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { MAP_SIZES, LOGO } from './wizard.js';
+import { icon } from './icons.js';
 
 // ======================================================================
 // Import du monde réel.
@@ -47,7 +48,7 @@ export function openGeoDialog() {
         <section class="geo-map"><div id="geo-leaflet"></div></section>
         <aside class="geo-side wz-col"></aside>
         <footer class="wz-foot"><div class="wz-sum"></div><div class="spacer"></div>
-          <button data-a="cancel">Annuler</button><button data-a="create" class="primary">✓ Créer la carte</button></footer>
+          <button data-a="cancel">Annuler</button><button data-a="create" class="primary">${icon('check', 14)} Créer la carte</button></footer>
       </div>`;
     document.body.append(root);
     const side = root.querySelector('.geo-side'), sum = root.querySelector('.wz-sum');

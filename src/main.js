@@ -4,6 +4,7 @@ import { Terrain } from './terrain.js';
 import { DEFAULT_SURFACES } from './surfaces.js';
 import { ObjectManager, DEFAULT_LIBRARY, CATEGORIES, thumbnail, clearThumb, renderThumb } from './objects.js';
 import { A3Source } from './a3source.js';
+import { icon } from './icons.js';
 import { loadP3DParts, disposeParts, guessCategory } from './a3models.js';
 import { RoadManager } from './roads.js';
 import { buildExportZip, parseASC, canvasToJPEG } from './exporters.js';
@@ -112,16 +113,16 @@ function redo() { const s = redoStack.pop(); if (!s) return; undoStack.push(snap
 // Outils
 // ======================================================================
 const TOOLS = [
-  { id: 'nav', icon: '✋', label: 'Vue' },
-  { id: 'raise', icon: '⛰', label: 'Relief', undo: 'h' },
-  { id: 'smooth', icon: '〰', label: 'Lisser', undo: 'h' },
-  { id: 'flatten', icon: '▭', label: 'Aplanir', undo: 'h' },
-  { id: 'water', icon: '🌊', label: 'Eau', undo: 'h' },
-  { id: 'paint', icon: '🖌', label: 'Peindre', undo: 's' },
-  { id: 'scatter', icon: '🌲', label: 'Forêt', undo: 'o' },
-  { id: 'place', icon: '📦', label: 'Objet', undo: 'o' },
-  { id: 'select', icon: '➚', label: 'Sélect.', undo: 'o' },
-  { id: 'road', icon: '🛣', label: 'Routes', undo: 'rh' },
+  { id: 'nav', icon: 'nav', label: 'Vue' },
+  { id: 'raise', icon: 'raise', label: 'Relief', undo: 'h' },
+  { id: 'smooth', icon: 'smooth', label: 'Lisser', undo: 'h' },
+  { id: 'flatten', icon: 'flatten', label: 'Aplanir', undo: 'h' },
+  { id: 'water', icon: 'water', label: 'Eau', undo: 'h' },
+  { id: 'paint', icon: 'paint', label: 'Peindre', undo: 's' },
+  { id: 'scatter', icon: 'scatter', label: 'Forêt', undo: 'o' },
+  { id: 'place', icon: 'place', label: 'Objet', undo: 'o' },
+  { id: 'select', icon: 'select', label: 'Sélect.', undo: 'o' },
+  { id: 'road', icon: 'road', label: 'Routes', undo: 'rh' },
 ];
 
 const toolSettings = {
@@ -147,7 +148,7 @@ for (const t of TOOLS) {
   const b = document.createElement('button');
   b.dataset.tool = t.id;
   b.title = t.label;
-  b.innerHTML = `${t.icon}<small>${t.label}</small>`;
+  b.innerHTML = `${icon(t.icon, 22)}<small>${t.label}</small>`;
   b.onclick = () => setTool(t.id);
   toolsEl.appendChild(b);
 }
@@ -451,7 +452,7 @@ function checkRow(label, get, set) {
 }
 function h3(t) { const e = document.createElement('h3'); e.textContent = t; return e; }
 function note(html) { const e = document.createElement('p'); e.className = 'note'; e.innerHTML = html; return e; }
-function btn(label, fn, cls = '') { const b = document.createElement('button'); b.textContent = label; b.onclick = fn; if (cls) b.className = cls; return b; }
+function btn(label, fn, cls = '') { const b = document.createElement('button'); b.innerHTML = label; b.onclick = fn; if (cls) b.className = cls; return b; }
 
 function brushControls(withStrength = true, withFalloff = true) {
   const s = state.settings;
@@ -486,7 +487,7 @@ function libraryList(onPick, activeId, withWeights = false) {
 
 function renderPanel() {
   const t = TOOLS.find((x) => x.id === state.tool);
-  panelTitle.textContent = `${t.icon} ${t.label}`;
+  panelTitle.innerHTML = `${icon(t.icon, 18)} ${t.label}`;
   panelBody.innerHTML = '';
   switch (state.tool) {
     case 'nav':
@@ -540,7 +541,7 @@ function renderPanel() {
     case 'scatter': {
       const S = toolSettings.scatter;
       panelBody.append(note('Peins une forêt ou une zone de végétation. Règle le <b>mélange d\'essences</b> avec les curseurs (0 = absent). Maintiens <b>Maj</b> pour gommer.'));
-      panelBody.append(h3('Mélange'), objects.library.length ? libraryList(null, null, true) : note('Bibliothèque vide : ajoute d\'abord des arbres depuis <b>🎮 Modèles Arma 3</b> (catalogue du bas), puis règle ici leur proportion.'));
+      panelBody.append(h3('Mélange'), objects.library.length ? libraryList(null, null, true) : note('Bibliothèque vide : ajoute d\'abord des arbres depuis <b>Modèles Arma 3</b> (catalogue du bas), puis règle ici leur proportion.'));
       panelBody.append(h3('Répartition'));
       panelBody.append(slider('Densité (/ha)', () => S.density, (v) => (S.density = v), 5, 800, 5));
       panelBody.append(slider('Espacement min (m)', () => S.spacing, (v) => (S.spacing = v), 1, 30, 0.5));
@@ -591,7 +592,7 @@ function renderPanel() {
         const it = document.createElement('div');
         it.className = 'item';
         it.innerHTML = `<span class="sw" style="background:${t2.color}"></span><div class="grow">Route ${i + 1}<div class="sub">${esc(t2.name)} · ${r.points.length} points</div></div>`;
-        it.append(btn('✕', () => { pushUndo('r'); roads.roads.splice(i, 1); roads.rebuild(); renderPanel(); updateInfo(); }, 'small danger'));
+        it.append(btn(icon('close', 12), () => { pushUndo('r'); roads.roads.splice(i, 1); roads.rebuild(); renderPanel(); updateInfo(); }, 'small danger'));
         list.append(it);
       });
       panelBody.append(list);
@@ -686,18 +687,22 @@ async function importModel() {
 // ======================================================================
 // Catalogue d'objets (bas de l'écran)
 // ======================================================================
+for (const [a, ic] of [['new', 'newmap'], ['geo', 'globe'], ['open', 'open'], ['save', 'save'], ['import-hm', 'importhm'], ['export', 'export'], ['undo', 'undo'], ['redo', 'redo'], ['help', 'help']]) {
+  const b = document.querySelector(`#topbar [data-action="${a}"]`);
+  if (b) b.innerHTML = icon(ic, 15) + `<span>${b.textContent.trim()}</span>`;
+}
 const assetsEl = document.getElementById('assets');
 const assetUI = { filter: '', cat: '', size: 92, open: true, view: 'lib', group: '' };
 assetsEl.innerHTML = `
   <div class="as-bar">
-    <button class="small" data-a="toggle" title="Replier / déplier">▾</button>
-    <b>📦 Objets</b>
+    <button class="small" data-a="toggle" title="Replier / déplier">${icon('down', 14)}</button>
+    <b>${icon('place', 16)} Objets</b>
     <select data-k="view" title="Ce qui est affiché dans le catalogue"></select>
     <input type="text" data-k="filter" placeholder="Filtrer (nom, modèle)…">
     <select data-k="cat"></select>
     <input type="range" data-k="size" min="64" max="150" value="92" title="Taille des vignettes">
     <label title="Rotation aléatoire à la pose"><input type="checkbox" data-k="rot" checked> Rot. aléatoire</label>
-    <button class="small primary" data-a="a3" title="Indique où se trouvent tes modèles Arma 3 (.pbo ou dossier)">🎮 Modèles Arma 3</button>
+    <button class="small primary" data-a="a3" title="Indique où se trouvent tes modèles Arma 3 (.pbo ou dossier)">${icon('models', 14)} Modèles Arma 3</button>
     <button class="small" data-a="model" title="Importer un modèle GLB / GLTF / OBJ">+ GLB/OBJ</button>
     <button class="small" data-a="names">+ Par nom</button>
     <span class="count"></span>
@@ -713,7 +718,7 @@ assetsEl.querySelector('[data-k=rot]').onchange = (e) => { toolSettings.placeRan
 assetsEl.querySelector('[data-a=toggle]').onclick = (e) => {
   assetUI.open = !assetUI.open;
   assetsEl.classList.toggle('closed', !assetUI.open);
-  e.target.textContent = assetUI.open ? '▾' : '▴';
+  e.currentTarget.innerHTML = icon(assetUI.open ? 'down' : 'up', 14);
   resize();
 };
 assetsEl.querySelector('[data-a=model]').onclick = () => importModel();
@@ -871,7 +876,7 @@ function renderAssets() {
     (!assetUI.filter || `${e.name} ${e.tbName}`.toLowerCase().includes(assetUI.filter)));
   assetsEl.querySelector('.count').textContent = `${list.length} / ${objects.library.length} modèles`;
   if (!objects.library.length) {
-    asGrid.innerHTML = `<div class="as-empty">Ta bibliothèque est vide.<br>Clique sur <b>🎮 Modèles Arma 3</b> pour indiquer où sont tes modèles (.pbo ou dossier), puis clique sur ceux que tu veux utiliser : ils s'ajoutent ici.</div>`;
+    asGrid.innerHTML = `<div class="as-empty">Ta bibliothèque est vide.<br>Clique sur <b>Modèles Arma 3</b> pour indiquer où sont tes modèles (.pbo ou dossier), puis clique sur ceux que tu veux utiliser : ils s'ajoutent ici.</div>`;
     return;
   }
   for (const e of list) {

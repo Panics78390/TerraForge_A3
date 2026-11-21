@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { STYLES, defaultParams, applyStyle, generate, colorize } from './gen.js';
 import { SURFACE_SETS } from './surfaces.js';
+import { icon } from './icons.js';
 
 // Tailles de carte proposées : côté (m) -> grille d'altitude et taille de cellule.
 export const MAP_SIZES = [
@@ -49,7 +50,7 @@ export function openWizard() {
           <div class="wz-sum"></div>
           <div class="spacer"></div>
           <button data-a="cancel">Annuler</button>
-          <button data-a="create" class="primary">✓ Créer la carte</button>
+          <button data-a="create" class="primary">${icon('check', 14)} Créer la carte</button>
         </footer>
       </div>`;
     document.body.append(root);
@@ -214,15 +215,15 @@ export function openWizard() {
       left.append(slider('Crêtes', P, 'ridges', 0, 100, 1, ' %', 'Arêtes marquées comme en montagne'));
       left.append(slider('Érosion', P, 'erosion', 0, 100, 1, ' %', 'Adoucit les pentes comme l\'eau le ferait'));
       const seed = el('div', 'row');
-      seed.innerHTML = `<label>Graine</label><input type="number" value="${P.seed}"><button class="small">🎲 Variante</button>`;
+      seed.innerHTML = `<label>Graine</label><input type="number" value="${P.seed}"><button class="small">${icon('dice', 14)} Variante</button>`;
       seed.querySelector('input').oninput = (e) => { P.seed = parseInt(e.target.value, 10) || 1; schedule(); };
       seed.querySelector('button').onclick = () => { P.seed = Math.floor(Math.random() * 99999); seed.querySelector('input').value = P.seed; schedule(); };
       left.append(seed);
 
       left.append(toggleBlock('Mer et côtes', 'Île, presqu\'île, côte ou archipel', P.sea, 'on', (b) => {
         const modes = el('div', 'wz-chips small');
-        for (const [id, label] of [['island', '🏝 Île'], ['peninsula', '⛰ Presqu\'île'], ['coast', '🌊 Côte'], ['archipelago', '✨ Archipel']]) {
-          const m = el('button', P.sea.mode === id ? 'active' : '', label);
+        for (const [id, label] of [['island', 'Île'], ['peninsula', 'Presqu\'île'], ['coast', 'Côte'], ['archipelago', 'Archipel']]) {
+          const m = el('button', P.sea.mode === id ? 'active' : '', icon(id, 16) + label);
           m.onclick = () => { P.sea.mode = id; pageTerrain(); schedule(); };
           modes.append(m);
         }
@@ -231,7 +232,7 @@ export function openWizard() {
           b.append(slider('Côté du continent', P.sea, 'dir', 0, 345, 15, '°', '0° = nord, 90° = est, 180° = sud, 270° = ouest'));
         b.append(slider('Part de terre', P.sea, 'landmass', 10, 95, 1, ' %'));
         const cs = el('div', 'row');
-        cs.innerHTML = `<label>Forme de la côte</label><input type="number" value="${P.sea.seed}"><button class="small">🎲</button>`;
+        cs.innerHTML = `<label>Forme de la côte</label><input type="number" value="${P.sea.seed}"><button class="small" title="Autre forme">${icon('dice', 14)}</button>`;
         cs.querySelector('input').oninput = (e) => { P.sea.seed = parseInt(e.target.value, 10) || 1; schedule(); };
         cs.querySelector('button').onclick = () => { P.sea.seed = Math.floor(Math.random() * 99999); cs.querySelector('input').value = P.sea.seed; schedule(); };
         b.append(cs);
@@ -273,7 +274,7 @@ export function openWizard() {
       }));
 
       right.innerHTML = `
-        <div class="wz-tabs"><button data-v="2d">▦ 2D · vue de dessus</button><button data-v="3d">◈ 3D · orientable</button></div>
+        <div class="wz-tabs"><button data-v="2d">${icon('grid2d', 14)} 2D · vue de dessus</button><button data-v="3d">${icon('cube3d', 14)} 3D · orientable</button></div>
         <div class="wz-view"><canvas class="pv2d" width="${PV}" height="${PV}"></canvas><canvas class="pv3d"></canvas></div>
         <p class="note pv-info"></p>`;
       right.querySelectorAll('.wz-tabs button').forEach((b) => {
