@@ -832,6 +832,7 @@ assetsEl.innerHTML = `
     <button class="small primary" data-a="a3" title="Indique où se trouvent tes modèles Arma 3 (.pbo ou dossier)">${icon('models', 14)} Modèles Arma 3</button>
     <button class="small" data-a="model" title="Importer un modèle GLB / GLTF / OBJ">+ GLB/OBJ</button>
     <button class="small" data-a="names">+ Par nom</button>
+    <button class="small" data-a="eden" title="Importer un mapping fait dans l'éditeur Eden d'Arma 3 (ou un fichier d'objets Terrain Builder)">${icon('importhm', 14)} Mapping Eden</button>
     <span class="count"></span>
     <span class="as-hint note" style="margin-left:auto;white-space:nowrap">Clique un objet, puis clique sur le terrain pour le poser.</span>
   </div>
@@ -878,6 +879,7 @@ assetsEl.querySelector('[data-a=toggle]').onclick = (e) => {
 };
 assetsEl.querySelector('[data-a=model]').onclick = () => importModel();
 assetsEl.querySelector('[data-a=names]').onclick = () => addByNames();
+assetsEl.querySelector('[data-a=eden]').onclick = () => importMapping();
 assetsEl.querySelector('[data-a=a3]').onclick = () => a3Dialog();
 
 // ---------- Source des vrais modèles Arma 3 ----------
@@ -1045,6 +1047,101 @@ function renderAssets() {
     card.onclick = () => { toolSettings.placeLib = e.id; setTool('place'); };
     asGrid.append(card);
   }
+}
+
+// ---------- Import d'un mapping (éditeur Eden d'Arma 3 ou fichier d'objets Terrain Builder) ----------
+// Script à lancer dans la console de débogage d'Eden : il copie tous les objets posés dans le presse-papiers.
+const EDEN_SCRIPT = `private _out = [];
+{
+  private _m = (getModelInfo _x) select 0;
+  if (_m != "") then {
+    private _p = getPosATL _x;
+    _out pushBack format ['"%1";%2;%3;%4;0;0;%5;%6;',
+      _m select [0, (count _m) - 4],
+      (_p select 0) toFixed 3, (_p select 1) toFixed 3,
+      (getDir _x) toFixed 2, (getObjectScale _x) toFixed 3, (_p select 2) toFixed 3];
+  };
+} forEach (all3DENEntities select 0);
+copyToClipboard (_out joinString toString [13, 10]);
+systemChat format ["TerraForge : %1 objets copiés", count _out];`;
+
+// Lit les lignes "Modèle";X;Y;Cap;Tangage;Roulis;Échelle;Hauteur;
+function parseObjectLines(text) {
+  const out = [];
+  for (const line of text.split(/\r?\n/)) {
+    const m = /^\s*"([^"]+)"\s*;(.*)$/.exec(line);
+    if (!m) continue;
+    const v = m[2].split(';').map((x) => parseFloat(x));
+    if (!isFinite(v[0]) || !isFinite(v[1])) continue;
+    out.push({ name: m[1].trim().replace(/\.p3d$/i, '').split(/[\\/]/).pop(), X: v[0], Y: v[1], yaw: v[2] || 0, scale: v[5] > 0 ? v[5] : 1, Z: v[6] || 0 });
+  }
+  return out;
+}
+
+async function importMapping() {
+  const res = await new Promise((resolve) => {
+    dlgForm.innerHTML = `<h2>Importer un mapping</h2>
+      <div style="display:flex;flex-direction:column;gap:8px;min-width:560px">
+        <p class="note"><b>Depuis l'éditeur Eden d'Arma 3 :</b> ouvre ta mission dans Eden, ouvre la console de débogage (Outils → Console de débogage), colle ce script et clique « Exécution locale ». Tous les objets posés sont copiés dans le presse-papiers. Reviens ici et colle-les dans la zone du bas.</p>
+        <textarea readonly data-k="script" style="min-height:92px">${esc(EDEN_SCRIPT)}</textarea>
+        <div><button type="button" class="small" data-a="copy">Copier le script</button> <button type="button" class="small" data-a="file">Ouvrir un fichier .txt (format Terrain Builder)…</button></div>
+        <textarea data-k="data" placeholder='Colle ici les objets (Ctrl+V), une ligne par objet :\n"Land_i_House_Big_01_V1_F";12345.6;6789.1;90;0;0;1;0;'></textarea>
+        <div class="row"><label>Position</label><select data-k="mode">
+          <option value="keep">Garder les coordonnées d'Arma (même carte ou même taille)</option>
+          <option value="center">Centrer le mapping sur ma carte</option></select></div>
+        <label style="display:flex;gap:6px;align-items:center"><input type="checkbox" data-k="replace"> Remplacer les objets déjà posés</label>
+      </div>
+      <menu><button value="cancel">Annuler</button><button value="ok" class="primary">Importer</button></menu>`;
+    const q = (k) => dlgForm.querySelector(k);
+    q('[data-a=copy]').onclick = async (e) => { try { await navigator.clipboard.writeText(EDEN_SCRIPT); } catch (err) { q('[data-k=script]').select(); document.execCommand('copy'); } e.target.textContent = 'Script copié'; };
+    q('[data-a=file]').onclick = async () => { const f = await pickFile('.txt'); if (f) q('[data-k=data]').value = await f.text(); };
+    dlg.onclose = () => resolve(dlg.returnValue === 'ok' ? { text: q('[data-k=data]').value, mode: q('[data-k=mode]').value, replace: q('[data-k=replace]').checked } : null);
+    dlg.showModal();
+  });
+  if (!res) return;
+  const rows = parseObjectLines(res.text);
+  if (!rows.length) { alertDialog('Rien à importer', 'Aucune ligne d\'objet reconnue. Chaque ligne doit ressembler à <code>"NomDuModèle";X;Y;Cap;0;0;Échelle;Hauteur;</code>'); return; }
+  // Les exports Terrain Builder ont un décalage est de 200000.
+  const xs = rows.map((r) => r.X), ys = rows.map((r) => r.Y);
+  let minX = Math.min(...xs.slice(0, 50000)), maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const r of rows) { if (r.X < minX) minX = r.X; if (r.X > maxX) maxX = r.X; if (r.Y < minY) minY = r.Y; if (r.Y > maxY) maxY = r.Y; }
+  const eastOff = minX >= 200000 ? 200000 : 0;
+  const S = (terrain.N - 1) * terrain.cell;
+  let dx = -eastOff, dy = 0;
+  if (res.mode === 'center') { dx = S / 2 - (minX + maxX) / 2; dy = S / 2 - (minY + maxY) / 2; }
+  let added = 0, outside = 0, real = 0, simple = 0;
+  await busy('Import du mapping…', async () => {
+    const byName = new Map();
+    for (const e of objects.library) if (e.tbName) byName.set(e.tbName.toLowerCase(), e);
+    const names = [...new Set(rows.map((r) => r.name.toLowerCase()))];
+    let i = 0;
+    for (const low of names) {
+      i++;
+      if (byName.has(low)) continue;
+      const name = rows.find((r) => r.name.toLowerCase() === low).name;
+      setBusy(`Chargement des modèles (${i}/${names.length})`);
+      const key = a3.byName.get(low);
+      const e = await objects.addLibraryEntry({ id: 'a3_' + Date.now().toString(36) + '_' + i, name, tbName: name, cat: key ? guessCategory(key) : 'Divers', ...(key ? { p3d: key } : { shape: 'box', w: 3, d: 3, height: 3, color: '#8d8f93' }) }, false);
+      byName.set(low, e);
+      if (i % 5 === 0) await tick();
+    }
+    for (const e of byName.values()) if (names.includes((e.tbName || '').toLowerCase())) { if (e.p3d && !e._missing) real++; else simple++; }
+    pushUndo('o');
+    const list = res.replace ? [] : objects.objects.slice();
+    for (const r of rows) {
+      const x = r.X + dx, z = S - (r.Y + dy);
+      if (!terrain.inside(x, z)) { outside++; continue; }
+      list.push({ lib: byName.get(r.name.toLowerCase()).id, x, z, rot: (-r.yaw * Math.PI) / 180, scale: r.scale, dy: Math.abs(r.Z) > 0.005 ? r.Z : 0 });
+      added++;
+    }
+    objects.setObjects(list);
+  });
+  renderAssets(); renderPanel(); updateInfo();
+  let msg = `<b>${added}</b> objets importés, avec ${real + simple} modèles différents : ${real} affichés en vrai, ${simple} en forme simplifiée.`;
+  if (simple && !a3.count) msg += '<br>Charge tes fichiers avec <b>Modèles Arma 3</b> pour voir les vrais modèles : ils remplaceront les boîtes grises.';
+  else if (simple) msg += '<br>Les modèles en boîte grise n\'ont pas été trouvés dans les fichiers chargés (mod non chargé ?). Ils seront quand même exportés sous leur nom.';
+  if (outside) msg += `<br><span class="warn">${outside} objets sont en dehors de ta carte et ont été ignorés.</span> Essaie « Centrer le mapping sur ma carte », ou crée une carte de la même taille que celle d'Arma.`;
+  alertDialog('Mapping importé', msg);
 }
 
 // Ajoute des modèles à partir de leurs noms Terrain Builder (un par ligne).
@@ -1551,7 +1648,7 @@ function esc(s) {
   window.__tfCreate = createMap;
   window.__tfGeo = { buildGeoMap, fetchElevation, parseOSM, placeBuildings };
   window.__tfDefaults = defaultParams;
-  window.__tfA3 = { a3, connectA3, useA3Model, camera, controls };
+  window.__tfA3 = { a3, connectA3, useA3Model, camera, controls, parseObjectLines };
   if (!new URLSearchParams(location.search).has('nowizard')) doNew(true);
 })();
 
