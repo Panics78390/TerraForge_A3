@@ -89,7 +89,7 @@ scene.add(water);
 function makeBrushRing(opacity) {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(65 * 3), 3));
-  const mat = new THREE.LineBasicMaterial({ color: 0x3ee0f0, depthTest: false, transparent: true, opacity });
+  const mat = new THREE.LineBasicMaterial({ color: 0x3aa8b8, depthTest: false, transparent: true, opacity });
   const line = new THREE.LineLoop(geo, mat);
   line.renderOrder = 20;
   line.visible = false;
@@ -101,7 +101,7 @@ const cursorInner = makeBrushRing(0.5);
 scene.add(cursor, cursorGlow, cursorInner);
 const cursorDot = new THREE.Mesh(
   new THREE.SphereGeometry(0.7, 10, 8),
-  new THREE.MeshBasicMaterial({ color: 0x3ee0f0, depthTest: false, transparent: true, opacity: 0.95 }),
+  new THREE.MeshBasicMaterial({ color: 0x3aa8b8, depthTest: false, transparent: true, opacity: 0.95 }),
 );
 cursorDot.renderOrder = 21;
 cursorDot.visible = false;
@@ -596,7 +596,7 @@ function updateCursor() {
   cursorDot.visible = !!show;
   if (!show) return;
   const r = state.settings.radius;
-  const col = state.tool === 'scatter' && shiftDown ? 0xff5050 : state.tool === 'raise' && shiftDown ? 0x60b0ff : 0x3ee0f0;
+  const col = state.tool === 'scatter' && shiftDown ? 0xff5050 : state.tool === 'raise' && shiftDown ? 0x60b0ff : 0x3aa8b8;
   for (const ring of BRUSH_RINGS) {
     const P = ring.line.geometry.attributes.position;
     const rr = r * ring.scale;

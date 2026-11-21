@@ -278,7 +278,7 @@ export function openWizard(surfaceSet = 'altis', gameName = '') {
         <div class="wz-view">
           <canvas class="pv2d" width="${PV}" height="${PV}"></canvas>
           <canvas class="pv3d"></canvas>
-          <div class="wz-radar" title="Aperçu radar"><canvas class="wz-radar-cv" width="96" height="96"></canvas><div class="wz-sweep"></div><i class="cross"></i><b>RADAR</b></div>
+          <div class="wz-radar" title="Aperçu"><canvas class="wz-radar-cv" width="96" height="96"></canvas><div class="wz-sweep"></div><i class="cross"></i></div>
         </div>
         <p class="note pv-info"></p>`;
       right.querySelectorAll('.wz-tabs button').forEach((b) => {
