@@ -74,7 +74,7 @@ export function openGeoDialog() {
       ignL.addTo(map);
       L.control.layers({ 'Photo IGN (France)': ignL, 'Satellite (monde)': satL, 'Relief': relief }, null, { collapsed: false, position: 'topright' }).addTo(map);
     }
-    const rect = L.rectangle(boundsOf(cfg.lat, cfg.lon, size()), { color: '#d9a441', weight: 2, fillOpacity: 0.18, interactive: false }).addTo(map);
+    const rect = L.rectangle(boundsOf(cfg.lat, cfg.lon, size()), { color: '#3ee0f0', weight: 2, fillOpacity: 0.12, interactive: false }).addTo(map);
     const syncRect = () => {
       const c = map.getCenter();
       cfg.lat = c.lat; cfg.lon = c.lng;

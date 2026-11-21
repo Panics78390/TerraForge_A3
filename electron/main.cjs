@@ -5,7 +5,7 @@ const path = require('path');
 function createWindow() {
   const win = new BrowserWindow({
     width: 1500, height: 950, minWidth: 1000, minHeight: 650,
-    backgroundColor: '#14171c',
+    backgroundColor: '#070b14',
     title: 'TerraForge',
     icon: path.join(__dirname, '..', 'build', 'icon.png'),
     autoHideMenuBar: true,
@@ -14,7 +14,7 @@ function createWindow() {
   });
   Menu.setApplicationMenu(null);
   // Écran de démarrage : le logo, le temps que l'éditeur se charge.
-  const splash = new BrowserWindow({ width: 720, height: 480, frame: false, resizable: false, center: true, alwaysOnTop: true, skipTaskbar: true, backgroundColor: '#0b0c0e', icon: path.join(__dirname, '..', 'build', 'icon.png') });
+  const splash = new BrowserWindow({ width: 720, height: 480, frame: false, resizable: false, center: true, alwaysOnTop: true, skipTaskbar: true, backgroundColor: '#050910', icon: path.join(__dirname, '..', 'build', 'icon.png') });
   splash.loadFile(path.join(__dirname, 'splash.html'));
   const started = Date.now();
   win.once('ready-to-show', () => setTimeout(() => {

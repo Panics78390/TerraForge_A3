@@ -33,6 +33,8 @@ const P = {
   archipelago: '<ellipse cx="7" cy="8" rx="3.500" ry="2.500"/><ellipse cx="16" cy="12.500" rx="4.500" ry="3"/><ellipse cx="8" cy="17.500" rx="2.500" ry="1.800"/>',
   grid2d: '<rect x="3.500" y="3.500" width="17" height="17" rx="2"/><path d="M3.500 9.200h17M3.500 14.800h17M9.200 3.500v17M14.800 3.500v17"/>',
   cube3d: '<path d="m12 2.500 8.500 4.700v9.600L12 21.500l-8.500-4.700V7.200z"/><path d="M12 21.500v-9.600M3.500 7.200l8.500 4.700 8.500-4.700"/>',
+  chevL: '<path d="m14.5 6-6 6 6 6"/>',
+  chevR: '<path d="m9.5 6 6 6-6 6"/>',
 };
 export function icon(name, size = 16) {
   return `<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.700" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${P[name] || ''}</svg>`;

@@ -275,7 +275,11 @@ export function openWizard(surfaceSet = 'altis', gameName = '') {
 
       right.innerHTML = `
         <div class="wz-tabs"><button data-v="2d">${icon('grid2d', 14)} 2D · vue de dessus</button><button data-v="3d">${icon('cube3d', 14)} 3D · orientable</button></div>
-        <div class="wz-view"><canvas class="pv2d" width="${PV}" height="${PV}"></canvas><canvas class="pv3d"></canvas></div>
+        <div class="wz-view">
+          <canvas class="pv2d" width="${PV}" height="${PV}"></canvas>
+          <canvas class="pv3d"></canvas>
+          <div class="wz-radar" title="Aperçu radar"><canvas class="wz-radar-cv" width="96" height="96"></canvas><div class="wz-sweep"></div><i class="cross"></i><b>RADAR</b></div>
+        </div>
         <p class="note pv-info"></p>`;
       right.querySelectorAll('.wz-tabs button').forEach((b) => {
         b.classList.toggle('active', b.dataset.v === view);
@@ -348,8 +352,31 @@ export function openWizard(surfaceSet = 'altis', gameName = '') {
       return pv;
     }
 
+    function drawRadar(r) {
+      const c = main.querySelector('.wz-radar-cv');
+      if (!c) return;
+      const S = c.width;
+      const ctx = c.getContext('2d');
+      const img = ctx.createImageData(S, S);
+      const src = r.rgba;
+      for (let y = 0; y < S; y++) {
+        const sy = Math.min(PV - 1, ((y + 0.5) * PV / S) | 0);
+        for (let x = 0; x < S; x++) {
+          const sx = Math.min(PV - 1, ((x + 0.5) * PV / S) | 0);
+          const i = (sy * PV + sx) * 4;
+          const o = (y * S + x) * 4;
+          img.data[o] = src[i];
+          img.data[o + 1] = src[i + 1];
+          img.data[o + 2] = src[i + 2];
+          img.data[o + 3] = 255;
+        }
+      }
+      ctx.putImageData(img, 0, 0);
+    }
+
     function drawPreview() {
       const r = compute();
+      drawRadar(r);
       const c2 = main.querySelector('.pv2d');
       if (!c2) return;
       main.querySelector('.pv-info').textContent = `Aperçu : ${(size() / 1000).toFixed(1)} km de côté · altitudes de ${r.min.toFixed(0)} à ${r.max.toFixed(0)} m`;
@@ -388,7 +415,7 @@ export function openWizard(surfaceSet = 'altis', gameName = '') {
         renderer.setSize(w, h, false);
         renderer.setPixelRatio(Math.min(2, devicePixelRatio));
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color('#141a21');
+        scene.background = new THREE.Color('#0c2438');
         const cam = new THREE.PerspectiveCamera(40, w / h, 0.01, 50);
         cam.position.set(0.9, 0.9, 1.3);
         const ctl = new OrbitControls(cam, canvas);
