@@ -337,10 +337,10 @@ window.addEventListener('keydown', (e) => {
   if (state.tool === 'select' && sel) {
     if (k === 'delete' || k === 'backspace') { pushUndo('o'); objects.remove([sel]); renderPanel(); updateInfo(); }
     if (k === ' ') { e.preventDefault(); if (document.activeElement instanceof HTMLButtonElement) document.activeElement.blur(); setGizmoMode({ translate: 'rotate', rotate: 'scale', scale: 'translate' }[gizmoMode]); }
-    if (k === 'w' || k === 'g') setGizmoMode('translate');
+    if (k === 'g' || k === 't') setGizmoMode('translate');
     if (k === 'e') setGizmoMode('rotate');
     if (k === 'r') setGizmoMode('scale');
-    if (k === 'q') { sel.rot += (e.shiftKey ? -1 : 1) * Math.PI / 12; objects.markDirty(sel.lib); }
+    if (e.code === 'KeyQ') { sel.rot += (e.shiftKey ? -1 : 1) * Math.PI / 12; objects.markDirty(sel.lib); }
     if (k === '+' || k === '=') { sel.scale = Math.min(5, sel.scale * 1.1); objects.markDirty(sel.lib); }
     if (k === '-') { sel.scale = Math.max(0.2, sel.scale / 1.1); objects.markDirty(sel.lib); }
   }
@@ -348,7 +348,35 @@ window.addEventListener('keydown', (e) => {
   if (!e.ctrlKey && n >= 1 && n <= TOOLS.length && !e.altKey) setTool(TOOLS[n === 0 ? 9 : n - 1].id);
   if (e.key === '0') setTool(TOOLS[9].id);
 });
-window.addEventListener('keyup', (e) => { shiftDown = e.shiftKey; ctrlDown = e.ctrlKey || e.metaKey; });
+window.addEventListener('keyup', (e) => { shiftDown = e.shiftKey; ctrlDown = e.ctrlKey || e.metaKey; moveKeys.delete(e.code); });
+window.addEventListener('blur', () => moveKeys.clear());
+
+// Déplacement de la vue au clavier : ZQSD (ou WASD sur un clavier QWERTY) et les flèches.
+// On lit la position physique des touches (e.code), donc ça marche quel que soit le clavier.
+const MOVE = { KeyW: [0, 1], ArrowUp: [0, 1], KeyS: [0, -1], ArrowDown: [0, -1], KeyA: [-1, 0], ArrowLeft: [-1, 0], KeyD: [1, 0], ArrowRight: [1, 0] };
+const moveKeys = new Set();
+window.addEventListener('keydown', (e) => {
+  if (!(e.code in MOVE) || e.ctrlKey || e.metaKey || e.altKey) return;
+  if (e.target.matches('input, select, textarea') || dlg.open) return;
+  if (e.code.startsWith('Arrow')) e.preventDefault();
+  moveKeys.add(e.code);
+});
+const _fwd = new THREE.Vector3(), _right = new THREE.Vector3();
+function keyboardMove(dt) {
+  if (!moveKeys.size) return;
+  let mx = 0, mz = 0;
+  for (const c of moveKeys) { mx += MOVE[c][0]; mz += MOVE[c][1]; }
+  if (!mx && !mz) return;
+  camera.getWorldDirection(_fwd);
+  _fwd.y = 0;
+  if (_fwd.lengthSq() < 1e-6) _fwd.set(0, 0, -1);
+  _fwd.normalize();
+  _right.set(-_fwd.z, 0, _fwd.x);
+  const speed = Math.max(20, camera.position.distanceTo(controls.target)) * (shiftDown ? 2.4 : 0.9) * dt / Math.hypot(mx, mz);
+  _fwd.multiplyScalar(mz * speed).addScaledVector(_right, mx * speed);
+  camera.position.add(_fwd);
+  controls.target.add(_fwd);
+}
 
 // ======================================================================
 // Application des pinceaux (à chaque image tant que le bouton est enfoncé)
@@ -472,6 +500,7 @@ function loop() {
   const now = performance.now();
   const dt = Math.min(0.05, (now - lastFrame) / 1000);
   lastFrame = now;
+  keyboardMove(dt);
   applyTool(dt);
   syncGizmo();
   objects.flush();
@@ -621,7 +650,7 @@ function renderPanel() {
       libraryTools();
       break;
     case 'select': {
-      panelBody.append(note('Clique un objet pour le sélectionner, puis utilise les <b>poignées</b> affichées dessus.<br><b>Espace</b> : changer de mode (déplacer, tourner, échelle) · <b>W</b> / <b>E</b> / <b>R</b> : mode direct · <b>Suppr</b> supprimer · <b>Alt + glisser</b> : déplacement libre.'));
+      panelBody.append(note('Clique un objet pour le sélectionner, puis utilise les <b>poignées</b> affichées dessus.<br><b>Espace</b> : changer de mode (déplacer, tourner, échelle) · <b>T</b> / <b>E</b> / <b>R</b> : mode direct · <b>Suppr</b> supprimer · <b>Alt + glisser</b> : déplacement libre.'));
       const modes = document.createElement('div');
       modes.className = 'seg';
       for (const [m, label, ic] of [['translate', 'Déplacer', 'nav'], ['rotate', 'Tourner', 'rotate'], ['scale', 'Échelle', 'scale']]) {
