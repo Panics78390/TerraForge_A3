@@ -2,18 +2,67 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 
-// Bibliothèque par défaut. "tbName" = nom du modèle tel qu'il apparaît dans la
-// bibliothèque de Terrain Builder (souvent le nom du .p3d sans extension).
-// Ce sont des exemples d'objets vanilla : vérifie-les dans ta propre bibliothèque TB.
+// Bibliothèque par défaut. "tbName" = nom du modèle dans la bibliothèque de
+// Terrain Builder (le nom du fichier .p3d sans extension).
+// Ce sont des objets vanilla d'Arma 3, affichés ici sous forme simplifiée :
+// vérifie les noms dans ta propre bibliothèque TB.
+const T = (id, name, tbName, shape, color, height, extra = {}) => ({ id, name, tbName, shape, color, height, ...extra });
+export const CATEGORIES = ['Arbres', 'Buissons', 'Rochers', 'Bâtiments', 'Murs et clôtures', 'Divers', 'Mes modèles'];
 export const DEFAULT_LIBRARY = [
-  { id: 'pine',   name: 'Pin',            tbName: 't_PinusS2s_F',     shape: 'conifer', color: '#2f5a2a', height: 18 },
-  { id: 'pine2',  name: 'Pin parasol',    tbName: 't_PinusP3s_F',     shape: 'umbrella', color: '#3c6630', height: 14 },
-  { id: 'beech',  name: 'Hêtre',          tbName: 't_FagusS2s_F',     shape: 'leafy',   color: '#4b7a34', height: 20 },
-  { id: 'oak',    name: 'Chêne',          tbName: 't_QuercusIR2s_F',  shape: 'leafy',   color: '#566f2e', height: 15 },
-  { id: 'olive',  name: 'Olivier',        tbName: 't_OleaE1s_F',      shape: 'leafy',   color: '#7a8a52', height: 7 },
-  { id: 'bush',   name: 'Buisson',        tbName: 'b_FicusC1s_F',     shape: 'bush',    color: '#4e6b32', height: 2.5 },
-  { id: 'rock',   name: 'Rocher',         tbName: 'Land_W_sharpStone_01', shape: 'rock', color: '#85817a', height: 3 },
-  { id: 'house',  name: 'Maison',         tbName: 'Land_i_House_Small_01_V1_F', shape: 'house', color: '#c9b79a', height: 6 },
+  ...[
+    T('pine', 'Pin', 't_PinusS2s_F', 'conifer', '#2f5a2a', 18),
+    T('pine_b', 'Pin (variante)', 't_PinusS2s_b_F', 'conifer', '#35612d', 15),
+    T('pine2', 'Pin parasol', 't_PinusP3s_F', 'umbrella', '#3c6630', 14),
+    T('beech', 'Frêne', 't_FraxinusAV2s_F', 'leafy', '#4b7a34', 20),
+    T('oak', 'Chêne vert', 't_QuercusIR2s_F', 'leafy', '#566f2e', 15),
+    T('olive', 'Olivier', 't_OleaE2s_F', 'leafy', '#7a8a52', 7),
+    T('olive1', 'Olivier jeune', 't_OleaE1s_F', 'leafy', '#84935a', 5),
+    T('ficus', 'Figuier', 't_FicusB2s_F', 'leafy', '#5a8038', 9),
+    T('poplar', 'Peuplier', 't_PopulusN3s_F', 'poplar', '#4f7d35', 24),
+    T('palm', 'Palmier', 't_PhoenixC3s_F', 'palm', '#5c8a3a', 11),
+    T('mulberry', 'Mûrier', 't_BroussonetiaP1s_F', 'leafy', '#6a8a3e', 6),
+  ].map((e) => ({ ...e, cat: 'Arbres' })),
+  ...[
+    T('bush', 'Buisson (figuier)', 'b_FicusC1s_F', 'bush', '#4e6b32', 2.5),
+    T('bush2', 'Buisson dense', 'b_FicusC2s_F', 'bush', '#456330', 3.5),
+    T('nerium', 'Laurier-rose', 'b_NeriumO2s_F', 'bush', '#5f7d3f', 3),
+    T('nerium_d', 'Laurier-rose sec', 'b_NeriumO2d_F', 'bush', '#8a7a4a', 3),
+    T('reed', 'Roseaux', 'b_ArundoD3s_F', 'bush', '#8c9a52', 4),
+  ].map((e) => ({ ...e, cat: 'Buissons' })),
+  ...[
+    T('rock', 'Pierre pointue', 'SharpStone_01', 'rock', '#85817a', 3),
+    T('rock2', 'Pierre pointue 2', 'SharpStone_02', 'rock', '#7d7972', 4),
+    T('blunt', 'Pierre ronde', 'BluntStone_01', 'rock', '#8e8a82', 2.5),
+    T('blunt2', 'Pierre ronde 2', 'BluntStone_02', 'rock', '#88847c', 3.5),
+    T('rockwall', 'Paroi rocheuse', 'SharpRock_wallH', 'rock', '#77736c', 14),
+    T('bluntwall', 'Gros rocher', 'BluntRock_wallH', 'rock', '#817d75', 12),
+  ].map((e) => ({ ...e, cat: 'Rochers' })),
+  ...[
+    T('house', 'Petite maison', 'i_House_Small_01_V1_F', 'house', '#c9b79a', 6, { w: 10, d: 7 }),
+    T('house2', 'Petite maison 2', 'i_House_Small_02_V1_F', 'house', '#d4c4a4', 5, { w: 12, d: 6 }),
+    T('housebig', 'Grande maison', 'i_House_Big_01_V1_F', 'house', '#cdbb9c', 9, { w: 12, d: 10 }),
+    T('housebig2', 'Grande maison 2', 'i_House_Big_02_V1_F', 'house', '#c4b08e', 9, { w: 14, d: 9 }),
+    T('stonehouse', 'Maison en pierre', 'i_Stone_HouseSmall_V1_F', 'house', '#a79f90', 5, { w: 11, d: 6 }),
+    T('stoneshed', 'Remise en pierre', 'i_Stone_Shed_V1_F', 'house', '#9d968a', 4, { w: 6, d: 5 }),
+    T('shop', 'Boutique', 'i_Shop_01_V1_F', 'house', '#d9cdb5', 8, { w: 9, d: 12 }),
+    T('garage', 'Garage', 'i_Garage_V1_F', 'house', '#bfb9ad', 4, { w: 9, d: 6 }),
+    T('chapel', 'Chapelle', 'Chapel_V1_F', 'house', '#e4dccb', 9, { w: 8, d: 12 }),
+    T('slum', 'Cabane', 'Slum_House01_F', 'house', '#8f7b62', 3.5, { w: 5, d: 4 }),
+    T('shedbig', 'Hangar', 'Shed_Big_F', 'box', '#8f9498', 7, { w: 14, d: 20 }),
+    T('cargohouse', 'Baraquement', 'Cargo_House_V1_F', 'box', '#6f7d5c', 3, { w: 6, d: 4 }),
+  ].map((e) => ({ ...e, cat: 'Bâtiments' })),
+  ...[
+    T('stonewall', 'Mur en pierre 8 m', 'Stone_8m_F', 'wall', '#9a948a', 1.4, { w: 8 }),
+    T('citywall', 'Mur de ville 8 m', 'City_8m_F', 'wall', '#cfc7b6', 2, { w: 8 }),
+    T('netfence', 'Grillage 8 m', 'Net_Fence_8m_F', 'wall', '#7c8a8f', 2.2, { w: 8 }),
+    T('indwall', 'Mur béton 4 m', 'Wall_IndCnc_4_F', 'wall', '#a9a9a4', 2.8, { w: 4 }),
+    T('hbarrier', 'H-Barrier 5', 'HBarrier_5_F', 'box', '#a39676', 1.4, { w: 5.5, d: 1.3 }),
+  ].map((e) => ({ ...e, cat: 'Murs et clôtures' })),
+  ...[
+    T('lamp', 'Lampadaire', 'LampStreet_F', 'pole', '#6b6f72', 7),
+    T('powerpole', 'Poteau électrique', 'PowerPoleWooden_F', 'pole', '#6e563c', 9),
+    T('watertower', 'Château d\'eau', 'WaterTower_01_F', 'box', '#9aa3a8', 12, { w: 5, d: 5 }),
+  ].map((e) => ({ ...e, cat: 'Divers' })),
 ];
 
 function primitiveParts(entry) {
@@ -45,12 +94,31 @@ function primitiveParts(entry) {
       add(new THREE.DodecahedronGeometry(H * 0.5, 0).scale(1.4, 0.7, 1), new THREE.MeshStandardMaterial({ color: col, flatShading: true }), H * 0.2);
       break;
     case 'house': {
+      const W = entry.w || 10, D = entry.d || 7;
       const wall = new THREE.MeshStandardMaterial({ color: col });
       const roof = new THREE.MeshStandardMaterial({ color: '#8a3b2a', flatShading: true });
-      add(new THREE.BoxGeometry(10, H * 0.6, 7), wall, H * 0.3);
-      add(new THREE.ConeGeometry(6.5, H * 0.4, 4).rotateY(Math.PI / 4).scale(1.1, 1, 0.8), roof, H * 0.8);
+      add(new THREE.BoxGeometry(W, H * 0.6, D), wall, H * 0.3);
+      add(new THREE.ConeGeometry(0.75, H * 0.4, 4).rotateY(Math.PI / 4).scale(W, 1, D), roof, H * 0.8);
       break;
     }
+    case 'box':
+      add(new THREE.BoxGeometry(entry.w || 4, H, entry.d || 4), new THREE.MeshStandardMaterial({ color: col }), H / 2);
+      break;
+    case 'wall':
+      add(new THREE.BoxGeometry(entry.w || 8, H, 0.4), new THREE.MeshStandardMaterial({ color: col }), H / 2);
+      break;
+    case 'pole':
+      add(new THREE.CylinderGeometry(0.12, 0.18, H, 6), new THREE.MeshStandardMaterial({ color: col }), H / 2);
+      add(new THREE.BoxGeometry(1.6, 0.15, 0.15), new THREE.MeshStandardMaterial({ color: col }), H * 0.95);
+      break;
+    case 'poplar':
+      add(new THREE.CylinderGeometry(0.2, 0.35, H * 0.3, 5), trunkMat, H * 0.15);
+      add(new THREE.SphereGeometry(H * 0.12, 7, 6).scale(1, 3.4, 1), leafMat, H * 0.6);
+      break;
+    case 'palm':
+      add(new THREE.CylinderGeometry(0.22, 0.35, H * 0.85, 6), trunkMat, H * 0.425);
+      add(new THREE.ConeGeometry(H * 0.32, H * 0.22, 8).rotateX(Math.PI), leafMat, H * 0.9);
+      break;
     default:
       add(new THREE.BoxGeometry(2, H, 2), new THREE.MeshStandardMaterial({ color: col }), H / 2);
   }
@@ -258,4 +326,46 @@ export class ObjectManager {
     this.selBox.box = box;
     this.selBox.visible = true;
   }
+}
+
+
+// ---------- Vignettes ----------
+let thumbGL = null;
+const thumbCache = new Map();
+export function clearThumb(id) { thumbCache.delete(id); }
+// Rend une petite image (dataURL) d'un modèle de la bibliothèque.
+export function thumbnail(mgr, id) {
+  if (thumbCache.has(id)) return thumbCache.get(id);
+  const g = mgr.groups.get(id);
+  if (!g) return '';
+  if (!thumbGL) {
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+    renderer.setSize(128, 128, false);
+    const scene = new THREE.Scene();
+    scene.add(new THREE.HemisphereLight('#ffffff', '#55504a', 1.6));
+    const sun = new THREE.DirectionalLight('#fff', 2);
+    sun.position.set(2, 4, 3);
+    scene.add(sun);
+    thumbGL = { renderer, scene, cam: new THREE.PerspectiveCamera(30, 1, 0.1, 5000), holder: new THREE.Group() };
+    scene.add(thumbGL.holder);
+  }
+  const { renderer, scene, cam, holder } = thumbGL;
+  holder.clear();
+  const box = new THREE.Box3();
+  for (const p of g.parts) {
+    const m = new THREE.Mesh(p.geometry, p.material);
+    m.matrixAutoUpdate = false;
+    m.matrix.copy(p.matrix);
+    holder.add(m);
+  }
+  holder.updateMatrixWorld(true);
+  box.setFromObject(holder);
+  const c = box.getCenter(new THREE.Vector3()), r = box.getSize(new THREE.Vector3()).length() / 2 || 1;
+  const dist = r / Math.sin((15 * Math.PI) / 180) * 1.05;
+  cam.position.set(c.x + dist * 0.62, c.y + dist * 0.42, c.z + dist * 0.66);
+  cam.lookAt(c);
+  renderer.render(scene, cam);
+  const url = renderer.domElement.toDataURL('image/png');
+  thumbCache.set(id, url);
+  return url;
 }

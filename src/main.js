@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { Terrain } from './terrain.js';
 import { DEFAULT_SURFACES } from './surfaces.js';
-import { ObjectManager, DEFAULT_LIBRARY } from './objects.js';
+import { ObjectManager, DEFAULT_LIBRARY, CATEGORIES, thumbnail, clearThumb } from './objects.js';
 import { RoadManager } from './roads.js';
 import { buildExportZip, parseASC, canvasToJPEG } from './exporters.js';
 import { saveProject, loadProject } from './project.js';
@@ -162,6 +162,7 @@ function setTool(id) {
   if (id !== 'select') objects.select(null);
   if (id === 'road') roads.startDraft(toolSettings.roadType);
   renderPanel();
+  renderAssets();
 }
 
 // ======================================================================
@@ -552,7 +553,7 @@ function renderPanel() {
     case 'place':
       panelBody.append(note('Clique sur le terrain pour poser l\'objet choisi. Utilise l\'outil Sélection pour le déplacer ou le tourner.'));
       panelBody.append(checkRow('Rotation aléatoire', () => toolSettings.placeRandomRot, (v) => (toolSettings.placeRandomRot = v)));
-      panelBody.append(h3('Bibliothèque'), libraryList((id) => { toolSettings.placeLib = id; renderPanel(); }, toolSettings.placeLib));
+      panelBody.append(note('Choisis le modèle dans le <b>catalogue en bas de l\'écran</b>.'));
       libraryTools();
       break;
     case 'select': {
@@ -607,18 +608,15 @@ function renderPanel() {
 }
 
 function libraryTools() {
-  panelBody.append(h3('Importer un modèle'));
-  panelBody.append(note('Formats : GLB, GLTF (fichier unique), OBJ. Le modèle sert d\'aperçu ; indique le nom du modèle Arma tel qu\'il est dans ta bibliothèque Terrain Builder.'));
-  panelBody.append(btn('Importer un modèle 3D…', importModel));
   const e = objects.entry(toolSettings.placeLib);
   if (e) {
     panelBody.append(h3('Modèle choisi'));
     const nm = document.createElement('div'); nm.className = 'row';
     nm.innerHTML = `<label>Nom affiché</label><input type="text" value="${esc(e.name)}">`;
-    nm.querySelector('input').onchange = (ev) => { e.name = ev.target.value; renderPanel(); };
+    nm.querySelector('input').onchange = (ev) => { e.name = ev.target.value; renderPanel(); renderAssets(); };
     const tb = document.createElement('div'); tb.className = 'row';
     tb.innerHTML = `<label>Nom Terrain Builder</label><input type="text" value="${esc(e.tbName || '')}">`;
-    tb.querySelector('input').onchange = (ev) => { e.tbName = ev.target.value.trim(); renderPanel(); };
+    tb.querySelector('input').onchange = (ev) => { e.tbName = ev.target.value.trim(); renderPanel(); renderAssets(); };
     panelBody.append(nm, tb);
     panelBody.append(btn('Retirer de la bibliothèque', () => {
       if (!confirmBox(`Retirer « ${e.name} » et tous ses objets placés ?`)) return;
@@ -626,7 +624,7 @@ function libraryTools() {
       objects.removeLibraryEntry(e.id);
       delete toolSettings.scatter.species[e.id];
       toolSettings.placeLib = objects.library[0]?.id;
-      renderPanel(); updateInfo();
+      renderPanel(); renderAssets(); updateInfo();
     }, 'danger'));
   }
 }
@@ -667,19 +665,95 @@ async function importModel() {
   try {
     const id = 'm_' + Date.now().toString(36);
     const entry = await objects.addLibraryEntry({
-      id, name: values.name, tbName: values.tbName, color: '#c08040',
+      id, name: values.name, tbName: values.tbName, color: '#c08040', cat: 'Mes modèles',
       modelData: dataUrl, modelFormat: ext === 'obj' ? 'obj' : 'gltf', modelScale: +values.scale || 1,
     });
     const s = entry.modelScale;
     if (s !== 1) for (const p of objects.groups.get(id).parts) p.matrix.premultiply(new THREE.Matrix4().makeScale(s, s, s));
     entry.height = (entry.height || 5) * s;
     toolSettings.placeLib = id;
-    renderPanel();
+    clearThumb(id);
+    setTool('place');
     toast(`Modèle « ${values.name} » ajouté`);
   } catch (err) {
     console.error(err);
     alertDialog('Import impossible', `Le fichier n'a pas pu être lu : ${esc(err.message || err)}. Pour un GLTF, utilise plutôt un GLB (fichier unique avec textures intégrées).`);
   }
+}
+
+// ======================================================================
+// Catalogue d'objets (bas de l'écran)
+// ======================================================================
+const assetsEl = document.getElementById('assets');
+const assetUI = { filter: '', cat: '', size: 92, open: true };
+assetsEl.innerHTML = `
+  <div class="as-bar">
+    <button class="small" data-a="toggle" title="Replier / déplier">▾</button>
+    <b>📦 Objets</b>
+    <input type="text" data-k="filter" placeholder="Filtrer (nom, modèle)…">
+    <select data-k="cat"></select>
+    <input type="range" data-k="size" min="64" max="150" value="92" title="Taille des vignettes">
+    <label><input type="checkbox" data-k="rot" checked> Rotation aléatoire</label>
+    <button class="small" data-a="model">+ Modèle 3D</button>
+    <button class="small" data-a="names">+ Par nom</button>
+    <span class="count"></span>
+    <span class="as-hint note" style="margin-left:auto;white-space:nowrap">Clique un objet, puis clique sur le terrain pour le poser.</span>
+  </div>
+  <div class="as-grid"></div>`;
+const asGrid = assetsEl.querySelector('.as-grid');
+assetsEl.querySelector('[data-k=filter]').oninput = (e) => { assetUI.filter = e.target.value.toLowerCase(); renderAssets(); };
+assetsEl.querySelector('[data-k=cat]').onchange = (e) => { assetUI.cat = e.target.value; renderAssets(); };
+assetsEl.querySelector('[data-k=size]').oninput = (e) => { asGrid.style.setProperty('--thumb', e.target.value + 'px'); };
+assetsEl.querySelector('[data-k=rot]').onchange = (e) => { toolSettings.placeRandomRot = e.target.checked; if (state.tool === 'place') renderPanel(); };
+assetsEl.querySelector('[data-a=toggle]').onclick = (e) => {
+  assetUI.open = !assetUI.open;
+  assetsEl.classList.toggle('closed', !assetUI.open);
+  e.target.textContent = assetUI.open ? '▾' : '▴';
+  resize();
+};
+assetsEl.querySelector('[data-a=model]').onclick = () => importModel();
+assetsEl.querySelector('[data-a=names]').onclick = () => addByNames();
+
+function renderAssets() {
+  const sel = assetsEl.querySelector('[data-k=cat]');
+  const cats = CATEGORIES.filter((c) => objects.library.some((e) => (e.cat || 'Divers') === c));
+  sel.innerHTML = `<option value="">Toutes les catégories</option>` + cats.map((c) => `<option ${c === assetUI.cat ? 'selected' : ''}>${c}</option>`).join('');
+  const list = objects.library.filter((e) =>
+    (!assetUI.cat || (e.cat || 'Divers') === assetUI.cat) &&
+    (!assetUI.filter || `${e.name} ${e.tbName}`.toLowerCase().includes(assetUI.filter)));
+  assetsEl.querySelector('.count').textContent = `${list.length} / ${objects.library.length} modèles`;
+  asGrid.innerHTML = '';
+  for (const e of list) {
+    const card = document.createElement('div');
+    card.className = 'as-card' + (state.tool === 'place' && e.id === toolSettings.placeLib ? ' active' : '');
+    card.title = `${e.name}\n${e.tbName || ''}`;
+    card.innerHTML = `<img alt="" loading="lazy" src="${thumbnail(objects, e.id)}"><div class="nm">${esc(e.name)}</div><div class="tb">${esc(e.tbName || '')}</div>`;
+    card.onclick = () => { toolSettings.placeLib = e.id; setTool('place'); };
+    asGrid.append(card);
+  }
+}
+
+// Ajoute des modèles à partir de leurs noms Terrain Builder (un par ligne).
+async function addByNames() {
+  const v = await formDialog('Ajouter des objets par nom', [
+    { key: 'names', label: 'Noms Terrain Builder', type: 'textarea', value: '', placeholder: 'Un nom par ligne, par ex.\nLand_MaMaison_01\nmon_arbre_02' },
+    { key: 'cat', label: 'Catégorie', type: 'select', value: 'Mes modèles', options: CATEGORIES.map((c) => [c, c]) },
+    { key: 'shape', label: 'Forme d\'aperçu', type: 'select', value: 'box', options: [['box', 'Boîte'], ['house', 'Maison'], ['leafy', 'Arbre feuillu'], ['conifer', 'Conifère'], ['bush', 'Buisson'], ['rock', 'Rocher'], ['wall', 'Mur'], ['pole', 'Poteau']] },
+    { key: 'height', label: 'Hauteur (m)', type: 'number', value: 5 },
+  ], 'Colle ici les noms des modèles de ta bibliothèque Terrain Builder (objets de mods compris). Ils apparaîtront dans le catalogue avec une forme simplifiée, et seront exportés sous ce nom exact.');
+  if (!v) return;
+  const names = v.names.split(/\r?\n/).map((n) => n.trim().replace(/\.p3d$/i, '')).filter(Boolean);
+  let n = 0;
+  for (const name of names) {
+    if (objects.library.some((e) => (e.tbName || '').toLowerCase() === name.toLowerCase())) continue;
+    await objects.addLibraryEntry({
+      id: 'n_' + Date.now().toString(36) + '_' + n++, name, tbName: name, cat: v.cat, shape: v.shape,
+      color: ({ leafy: '#4b7a34', conifer: '#2f5a2a', bush: '#4e6b32', rock: '#85817a' })[v.shape] || '#b8a98c',
+      height: Math.max(0.5, v.height || 5), w: 8, d: 6,
+    });
+  }
+  renderAssets();
+  toast(`${n} modèle(s) ajouté(s)`);
 }
 
 // ======================================================================
@@ -696,6 +770,8 @@ function formDialog(title, fields, intro = '', okLabel = 'Valider') {
           return `<div class="row"><label>${f.label}</label><select name="${f.key}">${f.options.map(([v, l]) => `<option value="${v}" ${String(v) === String(f.value) ? 'selected' : ''}>${l}</option>`).join('')}</select></div>`;
         if (f.type === 'checkbox')
           return `<div class="row"><label>${f.label}</label><input type="checkbox" name="${f.key}" ${f.value ? 'checked' : ''}></div>`;
+        if (f.type === 'textarea')
+          return `<div class="row"><label>${f.label}</label><textarea name="${f.key}" placeholder="${esc(f.placeholder || '')}">${esc(String(f.value))}</textarea></div>`;
         return `<div class="row"><label>${f.label}</label><input name="${f.key}" type="${f.type || 'text'}" step="${f.step || 'any'}" value="${esc(String(f.value))}"></div>`;
       }).join('') +
       `<menu><button value="cancel" formnovalidate>Annuler</button><button value="ok" class="primary">${okLabel}</button></menu>`;
@@ -952,6 +1028,7 @@ async function doOpen() {
       terrain.setSat(c);
     }
     await objects.setLibrary(json.library);
+    renderAssets();
     objects.setObjects(json.objects);
     roads.types = json.roadTypes || roads.types;
     roads.roads = json.roads || [];
@@ -1075,6 +1152,7 @@ function esc(s) {
   await objects.setLibrary(DEFAULT_LIBRARY.map((e) => ({ ...e })));
   resize();
   setTool('raise');
+  renderAssets();
   createMap({ name: 'MonTerrain', author: '', grid: 512, cell: 8, maskRes: 1024, surfaces: terrain.surfaces, params: defaultParams() });
   loop();
   window.__tf = state; // pratique pour le débogage dans la console
