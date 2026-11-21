@@ -183,6 +183,23 @@ export function surfaceRvmats(surfaces) {
   return out;
 }
 
+// Image de légende exigée par Terrain Builder (class Legend de layers.cfg) : sans elle,
+// « Generate layers » s'arrête sur « Unable to load the file mapLegend.png ».
+export function legendCanvas(surfaces) {
+  const row = 28, c = document.createElement('canvas');
+  c.width = 512; c.height = Math.max(64, 16 + row * surfaces.length);
+  const g = c.getContext('2d');
+  g.fillStyle = '#ffffff'; g.fillRect(0, 0, c.width, c.height);
+  g.font = '16px sans-serif'; g.textBaseline = 'middle';
+  surfaces.forEach((su, i) => {
+    const y = 8 + i * row;
+    g.fillStyle = `rgb(${su.mask.join(',')})`; g.fillRect(8, y + 2, 40, row - 6);
+    g.strokeStyle = '#000000'; g.strokeRect(8.5, y + 2.5, 40, row - 6);
+    g.fillStyle = '#000000'; g.fillText(`${su.id}  (${su.mask.join(', ')})`, 60, y + row / 2);
+  });
+  return c;
+}
+
 export function layersCfg(surfaces, tag) {
   let s = '// Généré par TerraForge.\nclass Layers\n{\n';
   for (const su of surfaces)
@@ -391,6 +408,7 @@ export async function buildExportZip(state, opts) {
   if (opts.xyz) files[`${src}${name}.xyz`] = heightmapXYZ(T, off);
   files[`${src}${name}_mask.png`] = await canvasToPNG(maskCanvas(T, opts.imageScale || 1));
   files[`${src}layers.cfg`] = strToU8(layersCfg(T.surfaces, name));
+  files[`${src}mapLegend.png`] = await canvasToPNG(legendCanvas(T.surfaces));
   if (opts.game !== 'dayz') for (const [f, txt] of Object.entries(surfaceRvmats(T.surfaces))) files[`${name}/data/${f}`] = strToU8(txt);
   files[`${src}${name}_sat.png`] = await canvasToPNG(satCanvas(T, opts.imageScale || 1));
   files[`${src}${name}_objets.txt`] = strToU8(objectsTXT(O.objects, O.library, T, off));
