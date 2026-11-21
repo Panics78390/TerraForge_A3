@@ -15,6 +15,19 @@
 - **Routes** : tracé par points avec courbes lissées, plusieurs types, nivellement du terrain sous la route.
 - **Projet** : enregistrement / ouverture (`.tfa3`), annuler / rétablir, import de relief (ASC ou image en niveaux de gris).
 
+## Vrais modèles Arma 3
+
+Le bouton **🎮 Modèles Arma 3** (catalogue du bas) permet d'indiquer où se trouvent tes modèles :
+
+- des fichiers **.pbo** du jeu ou d'un mod (dossier `Arma 3\Addons` : `structures_f*.pbo`, `plants_f.pbo`, `rocks_f.pbo`…) ;
+- ou un **dossier** entier (Addons, dossier de mod, lecteur `P:`).
+
+TerraForge lit directement les `.p3d` binarisés (ODOL) et leurs textures `.paa`, sans rien copier ni envoyer.
+Les modèles apparaissent dans le catalogue avec leur vignette, se posent sur la carte, et sont exportés sous le nom du fichier `.p3d`.
+Les objets du catalogue par défaut dont le nom correspond sont remplacés par le vrai modèle.
+
+Limites : il faut redonner l'emplacement à chaque ouverture (sécurité du navigateur), les fichiers `.ebo` (DLC chiffrés) et les `.p3d` non binarisés (MLOD) ne sont pas lus, et seule la texture de couleur est affichée.
+
 ## Export vers Terrain Builder
 
 Le bouton « Exporter vers Terrain Builder » crée un `.zip` contenant le dossier du mod, à décompresser sur `P:` :

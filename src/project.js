@@ -10,7 +10,7 @@ export function saveProject(state, satBytes) {
     cellSize: T.cell,
     maskRes: T.maskRes,
     surfaces: T.surfaces,
-    library: O.library.map((e) => ({ ...e })),
+    library: O.library.map((e) => { const c = { ...e }; delete c._missing; return c; }),
     objects: O.objects.map((o) => [o.lib, round(o.x), round(o.z), round(o.rot, 4), round(o.scale, 3), o.dy || 0]),
     roadTypes: R.types,
     roads: R.roads,

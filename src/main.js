@@ -2,7 +2,9 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { Terrain } from './terrain.js';
 import { DEFAULT_SURFACES } from './surfaces.js';
-import { ObjectManager, DEFAULT_LIBRARY, CATEGORIES, thumbnail, clearThumb } from './objects.js';
+import { ObjectManager, DEFAULT_LIBRARY, CATEGORIES, thumbnail, clearThumb, renderThumb } from './objects.js';
+import { A3Source } from './a3source.js';
+import { loadP3DParts, disposeParts, guessCategory } from './a3models.js';
 import { RoadManager } from './roads.js';
 import { buildExportZip, parseASC, canvasToJPEG } from './exporters.js';
 import { saveProject, loadProject } from './project.js';
@@ -685,16 +687,18 @@ async function importModel() {
 // Catalogue d'objets (bas de l'écran)
 // ======================================================================
 const assetsEl = document.getElementById('assets');
-const assetUI = { filter: '', cat: '', size: 92, open: true };
+const assetUI = { filter: '', cat: '', size: 92, open: true, view: 'lib', group: '' };
 assetsEl.innerHTML = `
   <div class="as-bar">
     <button class="small" data-a="toggle" title="Replier / déplier">▾</button>
     <b>📦 Objets</b>
+    <select data-k="view" title="Ce qui est affiché dans le catalogue"></select>
     <input type="text" data-k="filter" placeholder="Filtrer (nom, modèle)…">
     <select data-k="cat"></select>
     <input type="range" data-k="size" min="64" max="150" value="92" title="Taille des vignettes">
-    <label><input type="checkbox" data-k="rot" checked> Rotation aléatoire</label>
-    <button class="small" data-a="model">+ Modèle 3D</button>
+    <label title="Rotation aléatoire à la pose"><input type="checkbox" data-k="rot" checked> Rot. aléatoire</label>
+    <button class="small primary" data-a="a3" title="Indique où se trouvent tes modèles Arma 3 (.pbo ou dossier)">🎮 Modèles Arma 3</button>
+    <button class="small" data-a="model" title="Importer un modèle GLB / GLTF / OBJ">+ GLB/OBJ</button>
     <button class="small" data-a="names">+ Par nom</button>
     <span class="count"></span>
     <span class="as-hint note" style="margin-left:auto;white-space:nowrap">Clique un objet, puis clique sur le terrain pour le poser.</span>
@@ -702,7 +706,8 @@ assetsEl.innerHTML = `
   <div class="as-grid"></div>`;
 const asGrid = assetsEl.querySelector('.as-grid');
 assetsEl.querySelector('[data-k=filter]').oninput = (e) => { assetUI.filter = e.target.value.toLowerCase(); renderAssets(); };
-assetsEl.querySelector('[data-k=cat]').onchange = (e) => { assetUI.cat = e.target.value; renderAssets(); };
+assetsEl.querySelector('[data-k=cat]').onchange = (e) => { if (assetUI.view === 'a3') assetUI.group = e.target.value; else assetUI.cat = e.target.value; renderAssets(); };
+assetsEl.querySelector('[data-k=view]').onchange = (e) => { assetUI.view = e.target.value; renderAssets(); };
 assetsEl.querySelector('[data-k=size]').oninput = (e) => { asGrid.style.setProperty('--thumb', e.target.value + 'px'); };
 assetsEl.querySelector('[data-k=rot]').onchange = (e) => { toolSettings.placeRandomRot = e.target.checked; if (state.tool === 'place') renderPanel(); };
 assetsEl.querySelector('[data-a=toggle]').onclick = (e) => {
@@ -713,20 +718,162 @@ assetsEl.querySelector('[data-a=toggle]').onclick = (e) => {
 };
 assetsEl.querySelector('[data-a=model]').onclick = () => importModel();
 assetsEl.querySelector('[data-a=names]').onclick = () => addByNames();
+assetsEl.querySelector('[data-a=a3]').onclick = () => a3Dialog();
 
+// ---------- Source des vrais modèles Arma 3 ----------
+const a3 = new A3Source();
+const a3Thumbs = new Map(); // key -> dataURL ('' = illisible)
+const A3_MAX_CARDS = 400;
+objects.p3dLoader = async (entry) => {
+  if (!a3.count) return null;
+  const key = (entry.p3d && a3.resolve(entry.p3d)) || a3.byName.get((entry.tbName || '').toLowerCase());
+  if (!key) return null;
+  const r = await loadP3DParts(a3, key);
+  return { ...r, key };
+};
+
+function pickMany(dir) {
+  return new Promise((resolve) => {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.multiple = true;
+    if (dir) inp.webkitdirectory = true; else inp.accept = '.pbo,.p3d,.paa';
+    inp.onchange = () => resolve([...inp.files]);
+    inp.oncancel = () => resolve([]);
+    inp.click();
+  });
+}
+
+async function a3Dialog() {
+  const choice = await new Promise((resolve) => {
+    dlgForm.innerHTML = `<h2>Modèles Arma 3</h2>
+      <div><p>Indique à TerraForge où se trouvent tes modèles : il lit directement les vrais fichiers <b>.p3d</b> et leurs textures, et les affiche dans le catalogue et sur la carte.</p>
+      <p class="note">Tu peux choisir :<br>
+      • des fichiers <b>.pbo</b> du jeu ou d'un mod (par ex. dans <code>…\\steamapps\\common\\Arma 3\\Addons</code> : structures_f*.pbo, plants_f.pbo, rocks_f.pbo…) ;<br>
+      • un <b>dossier</b> entier : le dossier Addons, un dossier de mod, ou ton lecteur P: (par ex. <code>P:\\a3</code>).</p>
+      <p class="note">Rien n'est envoyé sur Internet : les fichiers restent sur ton PC. Si le navigateur demande « Importer N fichiers ? », c'est normal, accepte. Chacun choisit son propre emplacement ; il faut le redonner à chaque ouverture de TerraForge.</p>
+      ${a3.count ? `<p><b>${a3.count}</b> modèles déjà disponibles (${esc(a3.labels.slice(0, 6).join(', '))}${a3.labels.length > 6 ? '…' : ''}).</p>` : ''}</div>
+      <menu><button value="cancel">Fermer</button><button value="files" class="primary">Choisir des fichiers .pbo…</button><button value="dir" class="primary">Choisir un dossier…</button></menu>`;
+    dlg.onclose = () => resolve(dlg.returnValue);
+    dlg.showModal();
+  });
+  if (choice !== 'files' && choice !== 'dir') return;
+  const files = await pickMany(choice === 'dir');
+  if (files.length) await connectA3(files);
+}
+
+// Ajoute des fichiers à la source, puis remplace les formes simplifiées par les vrais modèles.
+async function connectA3(files) {
+  let res = null, upgraded = 0;
+  await busy('Lecture des fichiers Arma 3…', async () => {
+    res = await a3.addFiles(files, async (m) => { setBusy(m); await tick(); });
+    if (!res.models) return;
+    let i = 0;
+    for (const e of objects.library) {
+      i++;
+      if (e.modelData || (e.p3d && !e._missing)) continue;
+      setBusy(`Chargement des vrais modèles (${i}/${objects.library.length})`);
+      const r = await objects.p3dLoader(e).catch((err) => { console.warn(e.tbName, err); return null; });
+      if (!r) continue;
+      objects.replaceParts(e.id, r.parts);
+      e.height = r.height; e.p3d = r.key; delete e._missing;
+      clearThumb(e.id);
+      upgraded++;
+      await tick();
+    }
+  });
+  if (!res || !res.models) {
+    alertDialog('Aucun modèle trouvé', 'Aucun fichier .p3d n\'a été trouvé dans ce que tu as choisi. Choisis des fichiers .pbo du jeu (dossier Addons), un dossier de mod, ou un dossier contenant des .p3d. Les fichiers .ebo (contenu chiffré de certains DLC) ne peuvent pas être lus.');
+    return;
+  }
+  assetUI.view = 'a3';
+  renderAssets();
+  toast(`${res.models} modèles Arma 3 trouvés${upgraded ? `, ${upgraded} objets du catalogue remplacés par le vrai modèle` : ''}`, 4000);
+}
+
+// File d'attente des vignettes des modèles Arma 3 (un modèle à la fois).
+const a3Queue = [];
+let a3Busy = false;
+async function a3Pump() {
+  if (a3Busy) return;
+  a3Busy = true;
+  while (a3Queue.length) {
+    const { key, img } = a3Queue.shift();
+    if (!img.isConnected) continue;
+    if (!a3Thumbs.has(key)) {
+      try {
+        const r = await loadP3DParts(a3, key, { maxFaces: 6000, texSize: 128 });
+        a3Thumbs.set(key, renderThumb(r.parts));
+        disposeParts(r.parts);
+      } catch (err) { console.warn('Modèle illisible :', key, err.message); a3Thumbs.set(key, ''); }
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    const url = a3Thumbs.get(key);
+    if (url) img.src = url; else img.closest('.as-card')?.classList.add('bad');
+  }
+  a3Busy = false;
+}
+const a3Observer = new IntersectionObserver((ents) => {
+  for (const en of ents) if (en.isIntersecting) {
+    a3Observer.unobserve(en.target);
+    a3Queue.push({ key: en.target.dataset.key, img: en.target });
+  }
+  a3Pump();
+}, { root: asGrid, rootMargin: '150px' });
+
+async function useA3Model(m) {
+  let e = objects.library.find((x) => x.p3d === m.key) || objects.library.find((x) => !x.modelData && (x.tbName || '').toLowerCase() === m.name.toLowerCase());
+  if (!e) {
+    e = await objects.addLibraryEntry({ id: 'a3_' + Date.now().toString(36) + Math.floor(Math.random() * 1e4), name: m.name, tbName: m.name, cat: guessCategory(m.key), p3d: m.key });
+    if (e._missing) { toast('Ce modèle n\'a pas pu être lu'); }
+  }
+  toolSettings.placeLib = e.id;
+  setTool('place');
+}
+
+const EMPTY_IMG = 'data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==';
 function renderAssets() {
+  const viewSel = assetsEl.querySelector('[data-k=view]');
+  if (!a3.count) assetUI.view = 'lib';
+  viewSel.innerHTML = `<option value="lib">Ma bibliothèque (${objects.library.length})</option>` + (a3.count ? `<option value="a3">Arma 3 (${a3.count})</option>` : '');
+  viewSel.value = assetUI.view;
   const sel = assetsEl.querySelector('[data-k=cat]');
+  const keepScroll = asGrid.dataset.view === assetUI.view ? asGrid.scrollTop : 0;
+  asGrid.dataset.view = assetUI.view;
+  asGrid.innerHTML = '';
+  a3Queue.length = 0;
+  requestAnimationFrame(() => { asGrid.scrollTop = keepScroll; });
+  if (assetUI.view === 'a3') {
+    const groups = new Map();
+    for (const m of a3.models) groups.set(m.group, (groups.get(m.group) || 0) + 1);
+    const names = [...groups.keys()].sort();
+    if (assetUI.group && !groups.has(assetUI.group)) assetUI.group = '';
+    sel.innerHTML = `<option value="">Tous les dossiers</option>` + names.map((g) => `<option value="${esc(g)}" ${g === assetUI.group ? 'selected' : ''}>${esc(g)} (${groups.get(g)})</option>`).join('');
+    const list = a3.models.filter((m) => (!assetUI.group || m.group === assetUI.group) && (!assetUI.filter || m.name.toLowerCase().includes(assetUI.filter) || m.key.includes(assetUI.filter)));
+    assetsEl.querySelector('.count').textContent = list.length > A3_MAX_CARDS ? `${A3_MAX_CARDS} affichés sur ${list.length} (affine le filtre)` : `${list.length} modèles`;
+    const active = state.tool === 'place' ? objects.entry(toolSettings.placeLib)?.p3d : null;
+    for (const m of list.slice(0, A3_MAX_CARDS)) {
+      const card = document.createElement('div');
+      card.className = 'as-card' + (m.key === active ? ' active' : '');
+      card.title = `${m.name}\n${m.key}`;
+      card.innerHTML = `<img alt="" src="${a3Thumbs.get(m.key) || EMPTY_IMG}"><div class="nm">${esc(m.name)}</div><div class="tb">${esc(m.group)}</div>`;
+      if (a3Thumbs.get(m.key) === '') card.classList.add('bad');
+      const img = card.querySelector('img');
+      if (!a3Thumbs.has(m.key)) { img.dataset.key = m.key; a3Observer.observe(img); }
+      card.onclick = () => useA3Model(m);
+      asGrid.append(card);
+    }
+    return;
+  }
   const cats = CATEGORIES.filter((c) => objects.library.some((e) => (e.cat || 'Divers') === c));
   sel.innerHTML = `<option value="">Toutes les catégories</option>` + cats.map((c) => `<option ${c === assetUI.cat ? 'selected' : ''}>${c}</option>`).join('');
   const list = objects.library.filter((e) =>
     (!assetUI.cat || (e.cat || 'Divers') === assetUI.cat) &&
     (!assetUI.filter || `${e.name} ${e.tbName}`.toLowerCase().includes(assetUI.filter)));
   assetsEl.querySelector('.count').textContent = `${list.length} / ${objects.library.length} modèles`;
-  asGrid.innerHTML = '';
   for (const e of list) {
     const card = document.createElement('div');
-    card.className = 'as-card' + (state.tool === 'place' && e.id === toolSettings.placeLib ? ' active' : '');
-    card.title = `${e.name}\n${e.tbName || ''}`;
+    card.className = 'as-card' + (state.tool === 'place' && e.id === toolSettings.placeLib ? ' active' : '') + (e.p3d && !e._missing ? ' real' : '');
+    card.title = `${e.name}\n${e.tbName || ''}` + (e.p3d && !e._missing ? '\nVrai modèle Arma 3' : e._missing ? '\nModèle Arma 3 non trouvé : redonne la source avec « Modèles Arma 3 »' : '\nForme simplifiée');
     card.innerHTML = `<img alt="" loading="lazy" src="${thumbnail(objects, e.id)}"><div class="nm">${esc(e.name)}</div><div class="tb">${esc(e.tbName || '')}</div>`;
     card.onclick = () => { toolSettings.placeLib = e.id; setTool('place'); };
     asGrid.append(card);
@@ -1159,6 +1306,7 @@ function esc(s) {
   window.__tfCreate = createMap;
   window.__tfGeo = { buildGeoMap, fetchElevation, parseOSM };
   window.__tfDefaults = defaultParams;
+  window.__tfA3 = { a3, connectA3, useA3Model, camera, controls };
   if (!new URLSearchParams(location.search).has('nowizard')) doNew(true);
 })();
 

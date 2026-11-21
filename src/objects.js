@@ -168,6 +168,7 @@ export class ObjectManager {
     this.selBox = new THREE.Box3Helper(new THREE.Box3(), 0xffcc00);
     this.selBox.visible = false;
     scene.add(this.selBox);
+    this.p3dLoader = null; // async (entry) => { parts, height, key } | null
   }
 
   async setLibrary(lib) {
@@ -180,15 +181,33 @@ export class ObjectManager {
 
   async addLibraryEntry(entry, rebuild = true) {
     let parts;
-    if (entry.modelData) {
+    delete entry._missing;
+    const real = !entry.modelData && this.p3dLoader ? await this.p3dLoader(entry).catch((e) => { console.warn('Modèle illisible :', entry.tbName, e); return null; }) : null;
+    if (real) {
+      parts = real.parts;
+      entry.height = real.height;
+      entry.p3d = real.key;
+    } else if (entry.modelData) {
       const r = await loadModelParts(entry.modelData, entry.modelFormat);
       parts = r.parts;
       if (!entry.height) entry.height = r.height;
-    } else parts = primitiveParts(entry);
+    } else {
+      if (entry.p3d) entry._missing = true;
+      parts = primitiveParts(entry.shape ? entry : { ...entry, shape: 'box', w: 3, d: 3, height: entry.height || 3, color: '#8d8f93' });
+    }
     this.library.push(entry);
     this.groups.set(entry.id, { parts, meshes: [], capacity: 0 });
     if (rebuild) this.markDirty(entry.id);
     return entry;
+  }
+
+  // Remplace l'aperçu d'un modèle déjà dans la bibliothèque (ex. vrai modèle Arma 3 trouvé).
+  replaceParts(id, parts) {
+    const g = this.groups.get(id);
+    if (!g) return;
+    for (const m of g.meshes) { this.root.remove(m); m.dispose(); }
+    g.parts = parts; g.meshes = []; g.capacity = 0;
+    this.markDirty(id);
   }
 
   removeLibraryEntry(id) {
@@ -338,6 +357,12 @@ export function thumbnail(mgr, id) {
   if (thumbCache.has(id)) return thumbCache.get(id);
   const g = mgr.groups.get(id);
   if (!g) return '';
+  const url = renderThumb(g.parts);
+  thumbCache.set(id, url);
+  return url;
+}
+
+export function renderThumb(parts) {
   if (!thumbGL) {
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
     renderer.setSize(128, 128, false);
@@ -352,7 +377,7 @@ export function thumbnail(mgr, id) {
   const { renderer, scene, cam, holder } = thumbGL;
   holder.clear();
   const box = new THREE.Box3();
-  for (const p of g.parts) {
+  for (const p of parts) {
     const m = new THREE.Mesh(p.geometry, p.material);
     m.matrixAutoUpdate = false;
     m.matrix.copy(p.matrix);
@@ -362,10 +387,10 @@ export function thumbnail(mgr, id) {
   box.setFromObject(holder);
   const c = box.getCenter(new THREE.Vector3()), r = box.getSize(new THREE.Vector3()).length() / 2 || 1;
   const dist = r / Math.sin((15 * Math.PI) / 180) * 1.05;
+  cam.near = dist / 100; cam.far = dist * 10; cam.updateProjectionMatrix();
   cam.position.set(c.x + dist * 0.62, c.y + dist * 0.42, c.z + dist * 0.66);
   cam.lookAt(c);
   renderer.render(scene, cam);
-  const url = renderer.domElement.toDataURL('image/png');
-  thumbCache.set(id, url);
-  return url;
+  holder.clear();
+  return renderer.domElement.toDataURL('image/png');
 }
