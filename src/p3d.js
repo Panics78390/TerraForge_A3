@@ -99,10 +99,36 @@ export function p3dInfo(u8) {
   if (sig !== 'ODOL') throw new Error('ce n\'est pas un fichier .p3d');
   const ver = r.u32();
   if (ver < 50 || ver > 80) throw new Error('version ODOL ' + ver + ' non prise en charge');
-  if (ver >= 59) r.u32();
-  if (ver >= 58) r.str();
+  // En-tête : selon la version, quelques champs précèdent le nombre de niveaux de détail.
+  // On essaie la disposition connue, puis on cherche la position où la suite est cohérente
+  // (nombre de LOD plausible suivi de résolutions valides, puis table d'adresses trouvée).
+  const dv = r.dv;
+  const plausible = (p) => {
+    if (p + 8 > u8.length) return 0;
+    const n = dv.getUint32(p, true);
+    if (n < 1 || n > 64 || p + 4 + n * 4 > u8.length) return 0;
+    let prev = 0;
+    for (let i = 0; i < n; i++) {
+      const f = dv.getFloat32(p + 4 + i * 4, true);
+      if (!(f > 0.0001) || !(f < 1e17)) return 0;
+      prev = f;
+    }
+    return n;
+  };
+  let start = -1;
+  {
+    const t = new R(u8, 8);
+    try { if (ver >= 59) t.u32(); if (ver >= 58) t.str(); const n = dv.getUint32(t.p, true); if (n >= 1 && n <= 64 && findLodTable(r, n, t.p + 4 + n * 4)) start = t.p; } catch (e) { /* on cherche plus bas */ }
+  }
+  if (start < 0) {
+    for (let p = 8; p < Math.min(u8.length - 8, 600); p++) {
+      const n = plausible(p);
+      if (n && findLodTable(r, n, p + 4 + n * 4)) { start = p; break; }
+    }
+  }
+  if (start < 0) throw new Error('en-tête non reconnu (ODOL v' + ver + ')');
+  r.p = start;
   const nLods = r.u32();
-  if (nLods < 1 || nLods > 64) throw new Error('en-tête invalide');
   const res = [];
   for (let i = 0; i < nLods; i++) res.push(r.f32());
   const q = r.p;
@@ -115,7 +141,7 @@ export function p3dInfo(u8) {
   if (ver >= 52) r.skip(24);
   const center = v3();
   const table = findLodTable(r, nLods, q);
-  if (!table) throw new Error('table des niveaux de détail introuvable');
+  if (!table) throw new Error('table des niveaux de détail introuvable (ODOL v' + ver + ')');
   return { ver, nLods, res, bmin, bmax, center, starts: table.starts, ends: table.ends, tableAt: table.p };
 }
 
@@ -277,7 +303,7 @@ export function parseP3D(u8, { maxFaces = 12000 } = {}) {
       if (lod.nFaces <= maxFaces) break;
     } catch (e) { lastErr = e; if (best) break; }
   }
-  if (!best) throw lastErr || new Error('modèle vide');
+  if (!best) { const e = lastErr || new Error('modèle vide'); e.message += ' (ODOL v' + info.ver + ')'; throw e; }
   best.info = info;
   return best;
 }
