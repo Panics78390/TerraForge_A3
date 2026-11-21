@@ -63,3 +63,7 @@ npm install
 npm run dev            # développement
 npm run build:single   # un seul fichier dist-single/index.html, à ouvrir par double-clic
 ```
+
+## Ouvrir un projet Terrain Builder (.tv4p)
+
+« Ouvrir projet » accepte aussi les fichiers `.tv4p`. TerraForge y lit la taille de la carte et les chemins du relief (`.asc`), de l'image satellite, du masque et de `layers.cfg`, puis demande le dossier qui contient ces fichiers (par ex. `P:\macarte\source`). Les objets des calques (`.tv4l`) ne sont pas encore lus. Le projet Terrain Builder n'est jamais modifié.

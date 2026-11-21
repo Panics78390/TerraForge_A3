@@ -199,3 +199,10 @@ button:has(> .ic) { display: inline-flex; align-items: center; justify-content: 
 .as-grip::after { content: ''; position: absolute; left: 50%; top: 3px; width: 46px; height: 3px; margin-left: -23px; border-radius: 2px; background: var(--line); transition: background .15s; }
 .as-grip:hover::after { background: var(--accent); }
 #assets.closed .as-grip { display: none; }
+
+/* Ouverture d'un projet Terrain Builder */
+.tv-files { border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 12px; }
+.tv-files td { padding: 4px 8px 4px 0; border-bottom: 1px solid rgba(255,255,255,.08); vertical-align: top; }
+.tv-files code { word-break: break-all; }
+.tv-files td.ok { color: #7fd38a; white-space: nowrap; }
+.tv-files td.miss { color: #e0b060; white-space: nowrap; }

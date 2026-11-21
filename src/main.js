@@ -9,6 +9,7 @@ import { icon } from './icons.js';
 import { loadP3DParts, disposeParts, guessCategory, loadTexture } from './a3models.js';
 import { RoadManager } from './roads.js';
 import { buildExportZip, parseASC, canvasToJPEG } from './exporters.js';
+import { readTv4p, parseLayersCfg, readASCFile, baseName } from './tv4p.js';
 import { saveProject, loadProject } from './project.js';
 import { mulberry32, makeNoise } from './noise.js';
 import { openWizard, LOGO } from './wizard.js';
@@ -904,11 +905,11 @@ objects.p3dLoader = async (entry) => {
   } catch (err) { a3Errors.set(key, err.message || String(err)); throw err; }
 };
 
-function pickMany(dir) {
+function pickMany(dir, accept = '.pbo,.p3d,.paa') {
   return new Promise((resolve) => {
     const inp = document.createElement('input');
     inp.type = 'file'; inp.multiple = true;
-    if (dir) inp.webkitdirectory = true; else inp.accept = '.pbo,.p3d,.paa';
+    if (dir) inp.webkitdirectory = true; else inp.accept = accept;
     inp.onchange = () => resolve([...inp.files]);
     inp.oncancel = () => resolve([]);
     inp.click();
@@ -1518,8 +1519,9 @@ async function doSave() {
 }
 
 async function doOpen() {
-  const f = await pickFile('.tfa3');
+  const f = await pickFile('.tfa3,.tv4p');
   if (!f) return;
+  if (f.name.toLowerCase().endsWith('.tv4p')) return openTv4p(f);
   try {
     const { json, heights, surf, sat } = loadProject(new Uint8Array(await f.arrayBuffer()));
     terrain.surfaces = json.surfaces;
@@ -1552,6 +1554,202 @@ async function doOpen() {
     alertDialog('Ouverture impossible', esc(err.message || String(err)));
   }
 }
+
+// ======================================================================
+// Ouverture d'un projet Terrain Builder (.tv4p)
+// ======================================================================
+const TV_PARTS = [['relief', 'Relief'], ['sat', 'Image satellite'], ['mask', 'Masque des surfaces'], ['layers', 'Surfaces (layers.cfg)']];
+const SURF_HINTS = [
+  [/dry|sec|thorn|maquis/, 'drygrass', [150, 140, 85]], [/forest|foret|pine|pin/, 'forest', [62, 74, 40]],
+  [/grass|herbe|green|wild/, 'grass', [92, 118, 58]], [/beach|sand|plage|sable/, 'sand', [196, 180, 140]],
+  [/seabed|sea|mer/, 'seabed', [120, 130, 110]], [/rock|roche|cliff|falaise/, 'rock', [120, 116, 110]],
+  [/stony|gravel|gravier|stone|pierre/, 'gravel', [150, 146, 136]], [/concrete|beton|asphalt|road|route|city|ville/, 'concrete', [140, 140, 140]],
+  [/dirt|terre|soil|mud|boue/, 'dirt', [118, 96, 70]],
+];
+
+async function openTv4p(file) {
+  let proj;
+  try { proj = readTv4p(new Uint8Array(await file.arrayBuffer())); }
+  catch (err) { return alertDialog('Projet illisible', `TerraForge n'a pas réussi à lire <b>${esc(file.name)}</b>.<br><br>Raison technique : <code>${esc(err.message || String(err))}</code>`); }
+  const fr = proj.frame;
+  if (!fr || !fr.grid || !fr.cell) return alertDialog('Projet incomplet', 'Ce projet ne contient pas de zone de carte (« mapframe ») avec une taille de terrain.');
+  if (dirtyProject && !confirmBox('Les modifications non enregistrées seront perdues. Continuer ?')) return;
+
+  // Fichiers attendus (les derniers importés dans Terrain Builder gagnent).
+  const want = {};
+  for (const c of [...proj.contents].sort((a, b) => a.order - b.order)) if (c.kind in { relief: 1, sat: 1, mask: 1 }) want[c.kind] = c.path;
+  if (fr.layersCfg) want.layers = fr.layersCfg;
+  const got = {};
+  const offer = (files) => {
+    for (const [k] of TV_PARTS) {
+      if (!want[k]) continue;
+      const segs = want[k].toLowerCase().split(/[\\/]/);
+      let best = null, bestScore = 0;
+      for (const f of files) {
+        const fs = (f.webkitRelativePath || f.name).toLowerCase().split('/');
+        let n = 0;
+        while (n < fs.length && n < segs.length && fs[fs.length - 1 - n] === segs[segs.length - 1 - n]) n++;
+        if (n > bestScore) { best = f; bestScore = n; }
+      }
+      if (best) got[k] = best;
+    }
+  };
+  const grids = [fr.grid, fr.grid / 2, fr.grid / 4].filter((g) => g >= 256 && Number.isInteger(g));
+  const opts = await new Promise((resolve) => {
+    const draw = () => {
+      dlgForm.innerHTML = `<h2>Projet Terrain Builder : ${esc(proj.name)}</h2>
+        <div><p>Carte de <b>${(fr.width / 1000).toLocaleString('fr-FR')} km</b>, relief ${fr.grid} × ${fr.grid} (cellule ${+fr.cell.toFixed(3)} m).</p>
+        <p class="note">Le fichier .tv4p ne contient que des réglages et des chemins. Pour retrouver ta carte, donne à TerraForge les fichiers ci-dessous : choisis le dossier qui les contient (par ex. <code>P:\\${esc(proj.name)}\\source</code>) ou les fichiers un par un. Rien n'est envoyé sur Internet.</p>
+        <table class="tv-files">${TV_PARTS.filter(([k]) => want[k]).map(([k, label]) => `<tr><td>${label}</td><td><code>${esc(want[k])}</code></td><td class="${got[k] ? 'ok' : 'miss'}">${got[k] ? 'trouvé' : 'à fournir'}</td></tr>`).join('')}</table>
+        <p><button type="button" data-p="dir">Choisir un dossier…</button> <button type="button" data-p="files">Choisir des fichiers…</button></p>
+        <div class="row"><label>Précision du relief</label><select name="grid">${grids.map((g) => `<option value="${g}" ${g === Math.min(fr.grid, 2048) ? 'selected' : ''}>${g} × ${g}, cellule ${+(fr.width / g).toFixed(3)} m${g === fr.grid ? ' (comme le projet)' : ''}${g > 2048 ? ', très lourd' : ''}</option>`).join('')}</select></div>
+        <div class="row"><label>Sat / masque dans l'éditeur</label><select name="res">${[1024, 2048, 4096].map((v) => `<option value="${v}" ${v === 2048 ? 'selected' : ''}>${v} px (${(fr.width / v).toFixed(1)} m/px)</option>`).join('')}</select></div>
+        ${proj.objectCount ? `<p class="note">Ce projet déclare ${proj.objectCount.toLocaleString('fr-FR')} objets. Ils sont rangés dans les fichiers de calques (.tv4l), que TerraForge ne sait pas encore lire : la carte s'ouvrira sans eux.</p>` : ''}</div>
+        <menu><button value="cancel" formnovalidate>Annuler</button><button value="ok" class="primary">Ouvrir la carte</button></menu>`;
+      for (const b of dlgForm.querySelectorAll('[data-p]')) b.onclick = async () => {
+        const keep = { grid: dlgForm.elements.grid.value, res: dlgForm.elements.res.value };
+        offer(await pickMany(b.dataset.p === 'dir', '.asc,.png,.jpg,.jpeg,.bmp,.cfg'));
+        draw();
+        dlgForm.elements.grid.value = keep.grid; dlgForm.elements.res.value = keep.res;
+      };
+    };
+    draw();
+    dlg.onclose = () => resolve(dlg.returnValue === 'ok' ? { grid: +dlgForm.elements.grid.value, res: +dlgForm.elements.res.value } : null);
+    dlg.returnValue = '';
+    dlg.showModal();
+  });
+  if (!opts) return;
+  try {
+    const report = await busy('Ouverture du projet…', () => loadTv4p(proj, got, opts));
+    const missing = TV_PARTS.filter(([k]) => want[k] && !got[k]).map(([, l]) => l.toLowerCase());
+    alertDialog('Projet ouvert', `<p>${report.map(esc).join('<br>')}</p>${missing.length ? `<p class="note">Non fourni : ${missing.join(', ')}.</p>` : ''}<p class="note">Pense à « Enregistrer projet » : TerraForge garde sa propre copie (.tfa3) et ne modifie jamais ton projet Terrain Builder.</p>`);
+  } catch (err) {
+    console.error(err);
+    alertDialog('Ouverture impossible', esc(err.message || String(err)));
+  }
+}
+
+async function imagePixels(file, side, pixelated) {
+  const bmp = await createImageBitmap(file, { resizeWidth: side, resizeHeight: side, resizeQuality: pixelated ? 'pixelated' : 'medium' });
+  const c = document.createElement('canvas');
+  c.width = c.height = side;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.imageSmoothingEnabled = !pixelated;
+  ctx.drawImage(bmp, 0, 0, side, side);
+  bmp.close?.();
+  return { canvas: c, ctx };
+}
+
+async function loadTv4p(proj, files, opts) {
+  const fr = proj.frame, report = [];
+  const N = opts.grid, R = opts.res, cell = fr.width / N;
+
+  // Relief
+  let relief = null;
+  if (files.relief) {
+    if (!/\.asc$/i.test(files.relief.name)) throw new Error(`Relief : seul le format .asc est lu pour l'instant (${files.relief.name}).`);
+    setBusy('Lecture du relief…');
+    relief = await readASCFile(files.relief, (f) => setBusy(`Lecture du relief… ${Math.round(f * 100)} %`));
+  }
+  // Surfaces et masque
+  let surfaces = null, surf = null, layers = null;
+  if (files.layers) layers = parseLayersCfg(await files.layers.text());
+  let maskPx = null;
+  if (files.mask) {
+    setBusy('Lecture du masque…'); await tick();
+    maskPx = (await imagePixels(files.mask, R, true)).ctx.getImageData(0, 0, R, R).data;
+    if (!layers || !layers.length) {
+      // Pas de layers.cfg : une surface par couleur présente dans le masque.
+      const count = new Map();
+      for (let i = 0; i < maskPx.length; i += 4) { const k = (maskPx[i] << 16) | (maskPx[i + 1] << 8) | maskPx[i + 2]; count.set(k, (count.get(k) || 0) + 1); }
+      layers = [...count.entries()].sort((a, b) => b[1] - a[1]).filter(([, n], i) => i < 40 && n > R * R * 0.0005)
+        .map(([k], i) => ({ id: `surface_${i + 1}`, rvmat: '', colors: [[k >> 16, (k >> 8) & 255, k & 255]] }));
+    }
+  }
+  if (layers && layers.length) {
+    surfaces = layers.slice(0, 255).map((l) => {
+      const hint = SURF_HINTS.find(([re]) => re.test(l.id.toLowerCase()));
+      const m = l.colors[0];
+      return { id: l.id, name: l.id.replace(/^gdt_/i, '').replace(/_/g, ' '), role: hint ? hint[1] : '', mask: m, sat: hint ? hint[2] : m.map((v) => Math.round(v * 0.45 + 60)), rvmat: l.rvmat, _colors: l.colors };
+    });
+    // Un seul rôle par surface (le premier trouvé le garde).
+    const seen = new Set();
+    for (const s of surfaces) { if (seen.has(s.role)) s.role = ''; else seen.add(s.role); }
+  }
+  if (maskPx && surfaces) {
+    setBusy('Lecture du masque…'); await tick();
+    surf = new Uint8Array(R * R);
+    const pal = [];
+    surfaces.forEach((s, i) => { for (const c of s._colors) pal.push([c[0], c[1], c[2], i]); });
+    const cache = new Map();
+    let lastK = -1, lastI = 0;
+    for (let i = 0, q = 0; i < surf.length; i++, q += 4) {
+      const r = maskPx[q], g = maskPx[q + 1], b = maskPx[q + 2], k = (r << 16) | (g << 8) | b;
+      if (k !== lastK) {
+        let idx = cache.get(k);
+        if (idx === undefined) {
+          let bd = Infinity;
+          for (const p of pal) { const d = (p[0] - r) ** 2 + (p[1] - g) ** 2 + (p[2] - b) ** 2; if (d < bd) { bd = d; idx = p[3]; } }
+          cache.set(k, idx);
+        }
+        lastK = k; lastI = idx;
+      }
+      surf[i] = lastI;
+    }
+  }
+  // Satellite
+  let sat = null;
+  if (files.sat) {
+    setBusy("Lecture de l'image satellite…"); await tick();
+    const side = Math.min(4096, Math.max(R, fr.imagery || 4096));
+    sat = (await imagePixels(files.sat, side, false)).canvas;
+    if (surf) {
+      // Couleur d'affichage de chaque surface = couleur moyenne du satellite à cet endroit.
+      const S = 512, sp = (await imagePixels(sat, S, false)).ctx.getImageData(0, 0, S, S).data;
+      const acc = surfaces.map(() => [0, 0, 0, 0]);
+      for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+        const a = acc[surf[Math.floor((y + 0.5) * R / S) * R + Math.floor((x + 0.5) * R / S)]], q = (y * S + x) * 4;
+        a[0] += sp[q]; a[1] += sp[q + 1]; a[2] += sp[q + 2]; a[3]++;
+      }
+      surfaces.forEach((s, i) => { const a = acc[i]; if (a[3] > 20) s.sat = [0, 1, 2].map((c) => Math.round(a[c] / a[3])); });
+    }
+  }
+
+  setBusy('Construction de la carte…'); await tick();
+  if (surfaces) { for (const s of surfaces) delete s._colors; terrain.surfaces = surfaces; }
+  terrain.init(N, cell, R);
+  if (relief) terrain.loadHeightGrid(relief.data, relief.w, relief.h);
+  else terrain.flatAll(10);
+  if (surf) { terrain.surf.set(surf); terrain.redrawSurface(0, 0, R - 1, R - 1); }
+  terrain.setSat(sat);
+  objects.setObjects([]);
+  roads.roads = []; roads.rebuild();
+  // Modèles déjà utilisés par le projet : ajoutés à la bibliothèque si la source Arma 3 les connaît.
+  let added = 0;
+  if (a3.count) for (const path of proj.models) {
+    const key = a3.resolve(path), name = baseName(path).replace(/\.p3d$/, '');
+    if (!key || objects.library.some((e) => e.p3d === key || (e.tbName || '').toLowerCase() === name)) continue;
+    await objects.addLibraryEntry({ id: 'a3_' + Date.now().toString(36) + Math.floor(Math.random() * 1e4), name, tbName: name, cat: guessCategory(key), p3d: key });
+    added++;
+  }
+  Object.assign(state.settings, { name: proj.name, tbOffset: [fr.east, fr.north], satCredit: '' });
+  delete state.settings.geo;
+  toolSettings.surface = 0;
+  undoStack.length = redoStack.length = 0;
+  dirtyProject = true;
+  resetView(); renderPanel(); renderAssets(); updateInfo();
+  document.title = `${proj.name} · TerraForge`;
+
+  report.push(`Carte ${(fr.width / 1000).toLocaleString('fr-FR')} km, relief ${N} × ${N} (cellule ${+cell.toFixed(3)} m).`);
+  if (relief) report.push(`Relief : ${relief.w} × ${relief.h} points lus${relief.filled < relief.w * relief.h ? ' (fichier incomplet)' : ''}${relief.w !== N ? `, ramenés à ${N} × ${N}` : ''}.`);
+  if (surf) report.push(`Masque : ${surfaces.length} surfaces${files.layers ? ' reprises de layers.cfg' : ' déduites des couleurs du masque'}.`);
+  else if (surfaces) report.push(`Surfaces : ${surfaces.length} reprises de layers.cfg (sans masque, tout est peint avec la première).`);
+  if (sat) report.push(`Image satellite : chargée en ${sat.width} px.`);
+  if (added) report.push(`${added} modèles du projet ajoutés à ta bibliothèque.`);
+  if (proj.warnings.length) report.push(`Parties du fichier ignorées : ${proj.warnings.length}.`);
+  return report;
+}
+window.__tfTv = { readTv4p, loadTv4p, openTv4p };
 
 async function doImportHeightmap() {
   const f = await pickFile('.asc,.png,.jpg,.jpeg');
@@ -1587,8 +1785,8 @@ async function doImportHeightmap() {
 async function doExport() {
   const v = await formDialog('Exporter vers Terrain Builder', [
     { key: 'tag', label: 'Nom de la carte / du mod', value: state.settings.name || 'MonTerrain' },
-    { key: 'offsetEast', label: 'Easting (décalage X)', type: 'number', value: 200000 },
-    { key: 'offsetNorth', label: 'Northing (décalage Y)', type: 'number', value: 0 },
+    { key: 'offsetEast', label: 'Easting (décalage X)', type: 'number', value: state.settings.tbOffset?.[0] ?? 200000 },
+    { key: 'offsetNorth', label: 'Northing (décalage Y)', type: 'number', value: state.settings.tbOffset?.[1] ?? 0 },
     { key: 'imageScale', label: 'Agrandir sat/masque', type: 'select', value: 1, options: [[1, `×1 (${terrain.maskRes} px)`], [2, `×2 (${terrain.maskRes * 2} px)`], [4, `×4 (${terrain.maskRes * 4} px)`]] },
     { key: 'xyz', label: 'Ajouter aussi un fichier XYZ', type: 'checkbox', value: false },
   ], 'Crée un .zip contenant le dossier du mod à décompresser sur P: : config.cpp, relief (ASC), image satellite et masque (PNG), layers.cfg, liste des objets, routes et mode d\'emploi.', 'Exporter');
