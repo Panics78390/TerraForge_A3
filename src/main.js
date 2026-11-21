@@ -56,7 +56,10 @@ const camera = new THREE.PerspectiveCamera(55, 1, 1, 60000);
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
 controls.dampingFactor = 0.12;
-controls.maxPolarAngle = Math.PI * 0.495;
+controls.minPolarAngle = 0.01;
+controls.maxPolarAngle = Math.PI - 0.01; // caméra libre : on peut aussi regarder vers le haut
+controls.enableRotate = false; // la rotation et la molette sont gérées par la caméra libre (plus bas)
+controls.enableZoom = false;
 controls.screenSpacePanning = false;
 
 scene.add(new THREE.HemisphereLight('#d7eeff', '#3e5344', 1.25));
@@ -242,9 +245,9 @@ function setTool(id) {
   state.tool = id;
   for (const b of toolsEl.children) b.classList.toggle('active', b.dataset.tool === id);
   controls.mouseButtons = {
-    LEFT: id === 'nav' ? THREE.MOUSE.ROTATE : null,
+    LEFT: null,
     MIDDLE: THREE.MOUSE.PAN,
-    RIGHT: THREE.MOUSE.ROTATE,
+    RIGHT: null,
   };
   if (id !== 'select') objects.select(null);
   if (id === 'road') roads.startDraft(toolSettings.roadType);
@@ -439,10 +442,10 @@ window.addEventListener('blur', () => moveKeys.clear());
 const MOVE = { KeyE: [0, 0, 1], PageUp: [0, 0, 1], KeyQ: [0, 0, -1], PageDown: [0, 0, -1], KeyW: [0, 1], ArrowUp: [0, 1], KeyS: [0, -1], ArrowDown: [0, -1], KeyA: [-1, 0], ArrowLeft: [-1, 0], KeyD: [1, 0], ArrowRight: [1, 0] };
 const moveKeys = new Set();
 // Réglage de vitesse (barre du bas), mémorisé d'une session à l'autre.
-let moveSpeed = 1;
+let moveSpeed = 1, lookSpeed = 1;
 {
   const el = document.querySelector('#st-speed input'), lab = document.querySelector('#st-speed b');
-  const apply = (v) => { moveSpeed = 2 ** v; controls.panSpeed = moveSpeed; controls.rotateSpeed = 2 ** (v * 0.6); controls.zoomSpeed = 2 ** (v * 0.6); lab.textContent = '×' + (moveSpeed >= 1 ? +moveSpeed.toFixed(1) : +moveSpeed.toFixed(2)); };
+  const apply = (v) => { moveSpeed = 2 ** v; controls.panSpeed = moveSpeed; lookSpeed = 2 ** (v * 0.5); lab.textContent = '×' + (moveSpeed >= 1 ? +moveSpeed.toFixed(1) : +moveSpeed.toFixed(2)); };
   let saved = 0;
   try { saved = parseFloat(localStorage.getItem('tf-move-speed')) || 0; } catch { /* stockage indisponible */ }
   el.value = saved; apply(+el.value);
@@ -455,25 +458,84 @@ window.addEventListener('keydown', (e) => {
   if (e.code.startsWith('Arrow') || e.code.startsWith('Page')) e.preventDefault();
   moveKeys.add(e.code);
 });
-const _fwd = new THREE.Vector3(), _right = new THREE.Vector3();
+// ----------------------------------------------------------------------
+// Caméra libre (comme dans un éditeur de jeu) :
+//  - clic droit maintenu (ou clic gauche avec l'outil Vue) : regarder autour de soi ;
+//  - ZQSD : avancer / reculer / gauche / droite dans la direction du regard ;
+//  - A / E : descendre / monter ; molette : avancer / reculer ; Maj : plus vite.
+// La caméra tourne sur elle-même au lieu de tourner autour d'un point du terrain.
+// ----------------------------------------------------------------------
+const _fwd = new THREE.Vector3(), _right = new THREE.Vector3(), _move = new THREE.Vector3();
+const _ray = new THREE.Ray();
+function groundUnderCamera() {
+  const p = camera.position;
+  return terrain.inside(p.x, p.z) ? Math.max(0, terrain.heightAt(p.x, p.z)) : 0;
+}
+// Replace le point visé par OrbitControls devant la caméra (sur le sol si on le regarde).
+function retarget() {
+  camera.getWorldDirection(_fwd);
+  _ray.origin.copy(camera.position); _ray.direction.copy(_fwd);
+  const hit = terrain.raycast(_ray);
+  let d = hit ? hit.distanceTo(camera.position) : Math.max(60, camera.position.y - groundUnderCamera());
+  d = Math.min(Math.max(d, 10), terrain.size * 3);
+  controls.target.copy(camera.position).addScaledVector(_fwd, d);
+}
+function freeMove(delta) {
+  camera.position.add(delta);
+  const floor = groundUnderCamera() + 1.6; // ne pas passer sous le sol
+  if (camera.position.y < floor) camera.position.y = floor;
+  retarget();
+}
+// Regarder autour de soi.
+let look = null;
+const _euler = new THREE.Euler(0, 0, 0, 'YXZ');
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  if (!controls.enabled || look) return;
+  if (!(e.button === 2 || (e.button === 0 && state.tool === 'nav'))) return;
+  look = { id: e.pointerId, x: e.clientX, y: e.clientY };
+  try { renderer.domElement.setPointerCapture(e.pointerId); } catch { /* sans capture */ }
+});
+renderer.domElement.addEventListener('pointermove', (e) => {
+  if (!look || e.pointerId !== look.id) return;
+  const dx = e.clientX - look.x, dy = e.clientY - look.y;
+  look.x = e.clientX; look.y = e.clientY;
+  _euler.setFromQuaternion(camera.quaternion, 'YXZ');
+  const k = 0.0032 * lookSpeed;
+  _euler.y -= dx * k;
+  _euler.x = Math.max(-1.55, Math.min(1.55, _euler.x - dy * k));
+  _euler.z = 0;
+  camera.quaternion.setFromEuler(_euler);
+  retarget();
+});
+const endLook = (e) => { if (look && e.pointerId === look.id) { look = null; try { renderer.domElement.releasePointerCapture(e.pointerId); } catch { /* idem */ } } };
+renderer.domElement.addEventListener('pointerup', endLook);
+renderer.domElement.addEventListener('pointercancel', endLook);
+renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
+// Molette : avancer / reculer dans la direction du regard.
+renderer.domElement.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  if (!controls.enabled) return;
+  camera.getWorldDirection(_fwd);
+  const alt = Math.max(6, camera.position.y - groundUnderCamera());
+  const step = -Math.sign(e.deltaY) * Math.min(3, Math.abs(e.deltaY) / 100) * alt * 0.22 * (shiftDown ? 3 : 1) * Math.sqrt(moveSpeed);
+  freeMove(_move.copy(_fwd).multiplyScalar(step));
+}, { passive: false });
+
 function keyboardMove(dt) {
   if (!moveKeys.size) return;
   let mx = 0, mz = 0, my = 0;
   for (const c of moveKeys) { mx += MOVE[c][0]; mz += MOVE[c][1]; my += MOVE[c][2] || 0; }
   if (!mx && !mz && !my) return;
   camera.getWorldDirection(_fwd);
-  _fwd.y = 0;
-  if (_fwd.lengthSq() < 1e-6) _fwd.set(0, 0, -1);
-  _fwd.normalize();
   _right.set(-_fwd.z, 0, _fwd.x);
-  const speed = Math.max(20, camera.position.distanceTo(controls.target)) * (shiftDown ? 2.4 : 0.9) * moveSpeed * dt / Math.hypot(mx, mz, my);
-  _fwd.multiplyScalar(mz * speed).addScaledVector(_right, mx * speed);
-  _fwd.y = my * speed;
-  // Ne pas passer sous le sol.
-  const floor = (terrain.inside(camera.position.x, camera.position.z) ? Math.max(0, terrain.heightAt(camera.position.x, camera.position.z)) : 0) + 2;
-  if (camera.position.y + _fwd.y < floor) _fwd.y = Math.min(0, floor - camera.position.y);
-  camera.position.add(_fwd);
-  controls.target.add(_fwd);
+  if (_right.lengthSq() < 1e-6) _right.set(1, 0, 0);
+  _right.normalize();
+  // Plus on est haut, plus on va vite : précis au ras du sol, rapide en survol.
+  const alt = Math.max(8, camera.position.y - groundUnderCamera());
+  const speed = alt * (shiftDown ? 3.2 : 1.1) * moveSpeed * dt / Math.hypot(mx, mz, my);
+  _move.copy(_fwd).multiplyScalar(mz * speed).addScaledVector(_right, mx * speed);
+  _move.y += my * speed;
+  freeMove(_move);
 }
 
 // ======================================================================
@@ -701,7 +763,7 @@ function renderPanel() {
   panelBody.innerHTML = '';
   switch (state.tool) {
     case 'nav':
-      panelBody.append(note('Clic gauche ou droit : tourner autour du terrain. Clic molette : déplacer la vue. Molette : zoom.'));
+      panelBody.append(note('<b>Caméra libre</b> : maintiens le clic droit (ou le clic gauche avec cet outil) pour regarder autour de toi, et déplace-toi avec <b>ZQSD</b>. <b>A</b> / <b>E</b> : descendre / monter. <b>Molette</b> : avancer / reculer. <b>Maj</b> : plus vite. Clic molette : glisser la vue.'));
       panelBody.append(h3('Terrain'));
       panelBody.append(note(`${terrain.size} m × ${terrain.size} m, grille ${terrain.N} × ${terrain.N}, ${terrain.cell} m par cellule.`));
       panelBody.append(btn('Recentrer la vue', resetView));
@@ -2054,7 +2116,7 @@ function doHelp() {
   alertDialog('Aide TerraForge', `
   <img class="help-logo" src="${logoUrl}" alt="TerraForge">
   <ul>
-    <li><b>Vue</b> : clic droit pour tourner, clic molette pour déplacer, molette pour zoomer.</li>
+    <li><b>Vue (caméra libre)</b> : maintiens le clic droit pour regarder autour de toi, ZQSD pour te déplacer, A / E pour descendre / monter, molette pour avancer / reculer, Maj pour aller plus vite. Clic molette : glisser la vue.</li>
     <li><b>Touches 1 à 9, 0</b> : changer d'outil. <b>[ ]</b> : taille du pinceau. <b>Ctrl+Z / Ctrl+Y</b> : annuler / rétablir. <b>Ctrl+S</b> : enregistrer.</li>
     <li><b>Relief</b> : clic pour monter, Maj+clic pour descendre. <b>Aplanir</b> : Ctrl+clic pour prendre l'altitude.</li>
     <li><b>Forêt</b> : règle le mélange d'essences, la densité et l'échelle, puis peins. Maj pour gommer.</li>
