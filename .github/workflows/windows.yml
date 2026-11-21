@@ -1,8 +1,6 @@
 name: Application Windows
 
 on:
-  push:
-    tags: ['v*']
   workflow_dispatch:
 
 permissions:
@@ -23,12 +21,17 @@ jobs:
         with:
           name: TerraForge-Windows
           path: release/*.exe
+      - name: Lire le numéro de version
+        id: v
+        shell: bash
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
       - name: Publier la version
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: release/*.exe
-          name: TerraForge ${{ github.ref_name }}
+          tag_name: v${{ steps.v.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: TerraForge ${{ steps.v.outputs.version }}
           body: |
             Application Windows de TerraForge.
             - **TerraForge-Installation** : installe le logiciel (raccourci dans le menu Démarrer).
