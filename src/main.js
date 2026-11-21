@@ -192,8 +192,7 @@ let gizmoMode = 'translate';
 function setGizmoMode(m) {
   gizmoMode = m;
   gizmo.setMode(m);
-  gizmo.showX = gizmo.showZ = m !== 'rotate'; // rotation autour de la verticale uniquement
-  gizmo.showY = true;
+  gizmo.setSpace(m === 'translate' ? 'world' : 'local');
   if (state.tool === 'select') renderPanel();
 }
 function syncGizmo() {
@@ -201,7 +200,7 @@ function syncGizmo() {
   if (!o) { if (gizmo.object) gizmo.detach(); return; }
   if (gizmo.dragging) return;
   gizmoProxy.position.set(o.x, terrain.heightAt(o.x, o.z) + (o.dy || 0), o.z);
-  gizmoProxy.rotation.set(0, o.rot, 0);
+  gizmoProxy.rotation.set(o.rx || 0, o.rot, o.rz || 0, 'YXZ');
   gizmoProxy.scale.setScalar(o.scale);
   if (gizmo.object !== gizmoProxy) gizmo.attach(gizmoProxy);
 }
@@ -221,9 +220,11 @@ gizmo.addEventListener('objectChange', () => {
     if (gizmo.axis === 'Y') o.dy = Math.round((p.y - terrain.heightAt(o.x, o.z)) * 100) / 100;
     else { objects.move(o, p.x, p.z); p.y = terrain.heightAt(p.x, p.z) + (o.dy || 0); }
   } else if (gizmoMode === 'rotate') {
-    // angle autour de Y, robuste aux retournements d'Euler
-    const d = new THREE.Vector3(1, 0, 0).applyQuaternion(gizmoProxy.quaternion);
-    o.rot = Math.atan2(-d.z, d.x);
+    // cap (Y), puis inclinaison avant/arrière (X) et sur le côté (Z)
+    const e = new THREE.Euler().setFromQuaternion(gizmoProxy.quaternion, 'YXZ');
+    const clean = (v) => (Math.abs(v) < 1e-4 ? 0 : v);
+    o.rot = e.y; o.rx = clean(e.x); o.rz = clean(e.z);
+    if (!o.rx && !o.rz) { delete o.rx; delete o.rz; }
   } else {
     const sc = gizmoProxy.scale, base = gizmoStartScale;
     let v = sc.x;
@@ -334,6 +335,7 @@ window.addEventListener('keydown', (e) => {
   const sel = objects.selected;
   if (state.tool === 'select' && sel) {
     if (k === 'delete' || k === 'backspace') { pushUndo('o'); objects.remove([sel]); renderPanel(); updateInfo(); }
+    if (k === ' ') { e.preventDefault(); if (document.activeElement instanceof HTMLButtonElement) document.activeElement.blur(); setGizmoMode({ translate: 'rotate', rotate: 'scale', scale: 'translate' }[gizmoMode]); }
     if (k === 'w' || k === 'g') setGizmoMode('translate');
     if (k === 'e') setGizmoMode('rotate');
     if (k === 'r') setGizmoMode('scale');
@@ -618,7 +620,7 @@ function renderPanel() {
       libraryTools();
       break;
     case 'select': {
-      panelBody.append(note('Clique un objet pour le sélectionner, puis utilise les <b>poignées</b> affichées dessus.<br><b>W</b> déplacer · <b>E</b> tourner · <b>R</b> échelle · <b>Suppr</b> supprimer · <b>Alt + glisser</b> : déplacement libre.'));
+      panelBody.append(note('Clique un objet pour le sélectionner, puis utilise les <b>poignées</b> affichées dessus.<br><b>Espace</b> : changer de mode (déplacer, tourner, échelle) · <b>W</b> / <b>E</b> / <b>R</b> : mode direct · <b>Suppr</b> supprimer · <b>Alt + glisser</b> : déplacement libre.'));
       const modes = document.createElement('div');
       modes.className = 'seg';
       for (const [m, label, ic] of [['translate', 'Déplacer', 'nav'], ['rotate', 'Tourner', 'rotate'], ['scale', 'Échelle', 'scale']]) {
@@ -632,6 +634,11 @@ function renderPanel() {
         panelBody.append(h3('Objet sélectionné'));
         panelBody.append(note(`${esc(e?.name || o.lib)} (${esc(e?.tbName || '')})`));
         panelBody.append(slider('Rotation (°)', () => Math.round(((-o.rot * 180) / Math.PI % 360 + 360) % 360), (v) => { o.rot = (-v * Math.PI) / 180; objects.markDirty(o.lib); }, 0, 359, 1));
+        const degOf = (v) => Math.round(((v || 0) * 180) / Math.PI);
+        const setTilt = (k, v) => { o[k] = (v * Math.PI) / 180; if (!o.rx && !o.rz) { delete o.rx; delete o.rz; } objects.markDirty(o.lib); };
+        panelBody.append(slider('Inclinaison avant/arrière (°)', () => degOf(o.rx), (v) => setTilt('rx', v), -180, 180, 1));
+        panelBody.append(slider('Inclinaison sur le côté (°)', () => degOf(o.rz), (v) => setTilt('rz', v), -180, 180, 1));
+        if (o.rx || o.rz) panelBody.append(btn('Remettre droit', () => { pushUndo('o'); delete o.rx; delete o.rz; objects.markDirty(o.lib); renderPanel(); }, 'small'));
         panelBody.append(slider('Échelle', () => +o.scale.toFixed(2), (v) => { o.scale = v; objects.markDirty(o.lib); }, 0.2, 4, 0.05));
         panelBody.append(slider('Décalage vertical (m)', () => o.dy || 0, (v) => { o.dy = v; objects.markDirty(o.lib); }, -5, 5, 0.1));
         panelBody.append(btn('Supprimer', () => { pushUndo('o'); objects.remove([o]); renderPanel(); updateInfo(); }, 'danger'));
@@ -1076,7 +1083,7 @@ function parseObjectLines(text) {
     if (!m) continue;
     const v = m[2].split(';').map((x) => parseFloat(x));
     if (!isFinite(v[0]) || !isFinite(v[1])) continue;
-    out.push({ name: m[1].trim().replace(/\.p3d$/i, '').split(/[\\/]/).pop(), X: v[0], Y: v[1], yaw: v[2] || 0, scale: v[5] > 0 ? v[5] : 1, Z: v[6] || 0 });
+    out.push({ name: m[1].trim().replace(/\.p3d$/i, '').split(/[\\/]/).pop(), X: v[0], Y: v[1], yaw: v[2] || 0, pitch: v[3] || 0, roll: v[4] || 0, scale: v[5] > 0 ? v[5] : 1, Z: v[6] || 0 });
   }
   return out;
 }
@@ -1143,7 +1150,7 @@ async function importMapping() {
     for (const r of rows) {
       const x = r.X + dx, z = S - (r.Y + dy);
       if (!terrain.inside(x, z)) { outside++; continue; }
-      list.push({ lib: byName.get(r.name.toLowerCase()).id, x, z, rot: (-r.yaw * Math.PI) / 180, scale: r.scale, dy: zOf(r, x, z) });
+      list.push({ lib: byName.get(r.name.toLowerCase()).id, x, z, rot: (-r.yaw * Math.PI) / 180, scale: r.scale, dy: zOf(r, x, z), ...(r.pitch || r.roll ? { rx: (-r.pitch * Math.PI) / 180, rz: (-r.roll * Math.PI) / 180 } : {}) });
       added++;
     }
     objects.setObjects(list);

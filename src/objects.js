@@ -285,6 +285,7 @@ export class ObjectManager {
     const m = new THREE.Matrix4(), q = new THREE.Quaternion(), s = new THREE.Vector3(), p = new THREE.Vector3();
     const tmp = new THREE.Matrix4();
     const up = new THREE.Vector3(0, 1, 0);
+    const eul = new THREE.Euler();
     for (const [id, list] of byLib) {
       const g = this.groups.get(id);
       if (!g) continue;
@@ -301,7 +302,7 @@ export class ObjectManager {
       }
       list.forEach((o, i) => {
         p.set(o.x, this.terrain.heightAt(o.x, o.z) + (o.dy || 0), o.z);
-        q.setFromAxisAngle(up, o.rot);
+        if (o.rx || o.rz) q.setFromEuler(eul.set(o.rx || 0, o.rot, o.rz || 0, 'YXZ')); else q.setFromAxisAngle(up, o.rot);
         s.setScalar(o.scale);
         m.compose(p, q, s);
         g.parts.forEach((part, pi) => {

@@ -138,6 +138,7 @@ export function layersCfg(surfaces, tag) {
 // ---------- Objets ----------
 // Format texte d'import Terrain Builder :
 // "NomModèle";X;Y;Yaw;Pitch;Roll;Scale;Z;
+const deg = (r) => { const d = (r * 180) / Math.PI; return Math.abs(d) < 0.005 ? 0 : d; };
 export function objectsTXT(objects, library, T, off = DEFAULT_OFFSET) {
   const names = new Map(library.map((e) => [e.id, e.tbName || e.name]));
   const out = [];
@@ -145,7 +146,7 @@ export function objectsTXT(objects, library, T, off = DEFAULT_OFFSET) {
     const east = off.east + o.x, north = off.north + T.north(o.z);
     let yaw = (-o.rot * 180) / Math.PI;
     yaw = ((yaw % 360) + 360) % 360;
-    out.push(`"${names.get(o.lib)}";${fmt(east)};${fmt(north)};${fmt(yaw, 2)};0;0;${fmt(o.scale, 3)};${fmt(o.dy || 0, 3)};`);
+    out.push(`"${names.get(o.lib)}";${fmt(east)};${fmt(north)};${fmt(yaw, 2)};${fmt(deg(-(o.rx || 0)), 2)};${fmt(deg(-(o.rz || 0)), 2)};${fmt(o.scale, 3)};${fmt(o.dy || 0, 3)};`);
   }
   return out.join('\r\n') + '\r\n';
 }

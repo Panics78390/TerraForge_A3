@@ -11,7 +11,7 @@ export function saveProject(state, satBytes) {
     maskRes: T.maskRes,
     surfaces: T.surfaces,
     library: O.library.map((e) => { const c = { ...e }; delete c._missing; return c; }),
-    objects: O.objects.map((o) => [o.lib, round(o.x), round(o.z), round(o.rot, 4), round(o.scale, 3), o.dy || 0]),
+    objects: O.objects.map((o) => [o.lib, round(o.x), round(o.z), round(o.rot, 4), round(o.scale, 3), o.dy || 0, ...(o.rx || o.rz ? [round(o.rx || 0, 4), round(o.rz || 0, 4)] : [])]),
     roadTypes: R.types,
     roads: R.roads,
     settings: state.settings,
@@ -31,7 +31,7 @@ export function loadProject(bytes) {
   if (json.format !== 'terraforge-a3') throw new Error('Fichier projet non reconnu');
   const heights = new Float32Array(files['heights.bin'].slice().buffer);
   const surf = files['surf.bin'];
-  json.objects = json.objects.map(([lib, x, z, rot, scale, dy]) => ({ lib, x, z, rot, scale, dy }));
+  json.objects = json.objects.map(([lib, x, z, rot, scale, dy, rx, rz]) => ({ lib, x, z, rot, scale, dy, ...(rx || rz ? { rx: rx || 0, rz: rz || 0 } : {}) }));
   return { json, heights, surf, sat: files['sat.jpg'] || null };
 }
 
