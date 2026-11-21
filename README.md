@@ -39,6 +39,10 @@ Le bouton « Exporter vers Terrain Builder » crée un `.zip` contenant le dossi
 - Les chemins `.rvmat` du jeu de surfaces Altis / Stratis (`a3\map_data`) sont à vérifier sur ton lecteur P:.
 - L'image satellite générée est une base simple (couleurs de surface + ombrage).
 
+## Version en ligne
+
+`docs/index.html` contient l'application en un seul fichier. Active GitHub Pages (Settings → Pages → branche `main`, dossier `/docs`) pour l'utiliser à l'adresse `https://panics78390.github.io/TerraForge_A3/`. `npm run build:pages` la met à jour.
+
 ## Lancer
 
 ```bash

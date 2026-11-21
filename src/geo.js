@@ -38,16 +38,18 @@ export function openGeoDialog() {
     const size = () => cfg.grid * cfg.cell;
 
     const map = L.map(root.querySelector('#geo-leaflet'), { zoomControl: true }).setView([cfg.lat, cfg.lon], 12);
-    // Fond de carte : plan CARTO (données OpenStreetMap). S'il est refusé ou hors
-    // ligne, on bascule sur un fond « relief » dessiné à partir des tuiles d'altitude.
-    const plan = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-      maxZoom: 19, subdomains: 'abcd', attribution: '© contributeurs OpenStreetMap © CARTO',
-    });
+    // Fond de carte. Le plan OpenStreetMap n'est autorisé que pour une page servie
+    // en http(s) (version en ligne) ; pour un fichier local on affiche un fond
+    // « relief » dessiné à partir des tuiles d'altitude, toujours disponible.
+    const online = location.protocol.startsWith('http');
     const relief = reliefLayer();
-    let errors = 0;
-    plan.on('tileerror', () => { if (++errors === 3 && map.hasLayer(plan)) { map.removeLayer(plan); relief.addTo(map); } });
-    plan.addTo(map);
-    L.control.layers({ 'Plan': plan, 'Relief': relief }, null, { collapsed: false, position: 'topright' }).addTo(map);
+    if (online) {
+      const plan = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '© contributeurs OpenStreetMap' });
+      let errors = 0;
+      plan.on('tileerror', () => { if (++errors === 3 && map.hasLayer(plan)) { map.removeLayer(plan); relief.addTo(map); } });
+      plan.addTo(map);
+      L.control.layers({ 'Plan': plan, 'Relief': relief }, null, { collapsed: false, position: 'topright' }).addTo(map);
+    } else relief.addTo(map);
     const rect = L.rectangle(boundsOf(cfg.lat, cfg.lon, size()), { color: '#d9a441', weight: 2, fillOpacity: 0.18, interactive: false }).addTo(map);
     const syncRect = () => {
       const c = map.getCenter();
@@ -77,6 +79,7 @@ export function openGeoDialog() {
       side.innerHTML = `
         <h2>Monde réel</h2>
         <p class="note">Cherche un lieu, puis déplace la carte : le carré jaune reste au centre et montre la zone qui deviendra ta map.</p>
+        ${location.protocol.startsWith('http') ? '' : '<p class="note warn">Fichier local : seul le fond « relief » est disponible. Le plan avec les noms de lieux s\'affiche dans la version en ligne.</p>'}
         <div class="row"><input type="text" data-k="q" placeholder="Ville, lieu, adresse…"><button class="small" data-a="search">Chercher</button></div>
         <div class="list" data-k="results"></div>
         <div class="row"><label>Latitude</label><input type="number" step="0.0001" data-k="lat"></div>
