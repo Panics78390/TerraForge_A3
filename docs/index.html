@@ -3865,45 +3865,27 @@ uniform vec2 tfS[4];`).replace("#include <map_fragment>",`
 `)],r=new Array(e);for(let a=0;a<e;a++){for(let l=0;l<e;l++)r[l]=i.heights[a*e+l].toFixed(2);s.push(n.encode(r.join(" ")+`
 `))}return r0(s)}function WA(i,t=vc){const e=i.N,n=new TextEncoder,s=[],r=new Array(e);for(let a=0;a<e;a++){for(let l=0;l<e;l++)r[l]=`${ps(t.east+l*i.cell,2)} ${ps(t.north+i.north(a*i.cell),2)} ${i.heights[a*e+l].toFixed(2)}`;s.push(n.encode(r.join(`
 `)+`
-`))}return r0(s)}function r0(i){let t=0;for(const s of i)t+=s.length;const e=new Uint8Array(t);let n=0;for(const s of i)e.set(s,n),n+=s.length;return e}function qA(i){const t=i.split(/\r?\n/),e={};let n=0;for(;n<t.length;n++){const h=t[n].trim().match(/^([a-zA-Z_]+)\s+(-?[\d.eE+-]+)$/);if(!h)break;e[h[1].toLowerCase()]=parseFloat(h[2])}const s=e.ncols,r=e.nrows,a=t.slice(n).join(" ").trim().split(/\s+/).map(Number),l=e.nodata_value??-9999,u=new Float32Array(s*r);for(let h=0;h<s*r;h++)u[h]=a[h]===l||!isFinite(a[h])?0:a[h];return{data:u,w:s,h:r,cellsize:e.cellsize}}function jd(i,t){const e=document.createElement("canvas");return e.width=i,e.height=t,e}function rd(i,t,e){if(t===1)return i;const n=jd(Math.round(i.width*t),Math.round(i.height*t)),s=n.getContext("2d");return s.imageSmoothingEnabled=e,s.imageSmoothingQuality="high",s.drawImage(i,0,0,n.width,n.height),n}function XA(i,t=1){const e=i.maskRes,n=jd(e,e),s=n.getContext("2d"),r=s.createImageData(e,e),a=r.data;for(let l=0;l<e*e;l++){const u=i.surfaces[i.surf[l]]||i.surfaces[0];a[l*4]=u.mask[0],a[l*4+1]=u.mask[1],a[l*4+2]=u.mask[2],a[l*4+3]=255}return s.putImageData(r,0,0),rd(n,t,!1)}function o0(i,t=1){if(i.sat)return rd(i.sat,i.maskRes*t/i.sat.width,!0);const e=i.maskRes,n=jd(e,e),s=n.getContext("2d");s.drawImage(i.canvas,0,0);const r=s.getImageData(0,0,e,e),a=r.data,l=[-.5,.75,-.45],u=Math.hypot(...l),h=Math.max(i.cell,i.size/e);for(let d=0;d<e;d++)for(let f=0;f<e;f++){const[m,g]=i.maskToWorld(f,d),x=i.heightAt(m-h,g)-i.heightAt(m+h,g),M=i.heightAt(m,g-h)-i.heightAt(m,g+h),_=2*h,v=Math.hypot(x,_,M),b=.55+.6*Math.max(0,(x*l[0]+_*l[1]+M*l[2])/(v*u)),S=(d*e+f)*4;a[S]=Math.min(255,a[S]*b),a[S+1]=Math.min(255,a[S+1]*b),a[S+2]=Math.min(255,a[S+2]*b)}return s.putImageData(r,0,0),rd(n,t,!0)}function ZA(i){return new Promise(t=>i.toBlob(async e=>t(new Uint8Array(await e.arrayBuffer())),"image/jpeg",.92))}function Zl(i){return new Promise(t=>i.toBlob(async e=>t(new Uint8Array(await e.arrayBuffer())),"image/png"))}const a0=/^a3\\map_data\\(gdt_\w+)\.rvmat$/i;function KA(i,t){return!i.rvmat||a0.test(i.rvmat)?`${t}\\data\\${i.id}.rvmat`:i.rvmat}function YA(i){return`ambient[]={0.9,0.9,0.9,1};
-diffuse[]={0.9,0.9,0.9,1};
-forcedDiffuse[]={0.02,0.02,0.02,1};
-emmisive[]={0,0,0,0};
+`))}return r0(s)}function r0(i){let t=0;for(const s of i)t+=s.length;const e=new Uint8Array(t);let n=0;for(const s of i)e.set(s,n),n+=s.length;return e}function qA(i){const t=i.split(/\r?\n/),e={};let n=0;for(;n<t.length;n++){const h=t[n].trim().match(/^([a-zA-Z_]+)\s+(-?[\d.eE+-]+)$/);if(!h)break;e[h[1].toLowerCase()]=parseFloat(h[2])}const s=e.ncols,r=e.nrows,a=t.slice(n).join(" ").trim().split(/\s+/).map(Number),l=e.nodata_value??-9999,u=new Float32Array(s*r);for(let h=0;h<s*r;h++)u[h]=a[h]===l||!isFinite(a[h])?0:a[h];return{data:u,w:s,h:r,cellsize:e.cellsize}}function jd(i,t){const e=document.createElement("canvas");return e.width=i,e.height=t,e}function rd(i,t,e){if(t===1)return i;const n=jd(Math.round(i.width*t),Math.round(i.height*t)),s=n.getContext("2d");return s.imageSmoothingEnabled=e,s.imageSmoothingQuality="high",s.drawImage(i,0,0,n.width,n.height),n}function XA(i,t=1){const e=i.maskRes,n=jd(e,e),s=n.getContext("2d"),r=s.createImageData(e,e),a=r.data;for(let l=0;l<e*e;l++){const u=i.surfaces[i.surf[l]]||i.surfaces[0];a[l*4]=u.mask[0],a[l*4+1]=u.mask[1],a[l*4+2]=u.mask[2],a[l*4+3]=255}return s.putImageData(r,0,0),rd(n,t,!1)}function o0(i,t=1){if(i.sat)return rd(i.sat,i.maskRes*t/i.sat.width,!0);const e=i.maskRes,n=jd(e,e),s=n.getContext("2d");s.drawImage(i.canvas,0,0);const r=s.getImageData(0,0,e,e),a=r.data,l=[-.5,.75,-.45],u=Math.hypot(...l),h=Math.max(i.cell,i.size/e);for(let d=0;d<e;d++)for(let f=0;f<e;f++){const[m,g]=i.maskToWorld(f,d),x=i.heightAt(m-h,g)-i.heightAt(m+h,g),M=i.heightAt(m,g-h)-i.heightAt(m,g+h),_=2*h,v=Math.hypot(x,_,M),b=.55+.6*Math.max(0,(x*l[0]+_*l[1]+M*l[2])/(v*u)),S=(d*e+f)*4;a[S]=Math.min(255,a[S]*b),a[S+1]=Math.min(255,a[S+1]*b),a[S+2]=Math.min(255,a[S+2]*b)}return s.putImageData(r,0,0),rd(n,t,!0)}function ZA(i){return new Promise(t=>i.toBlob(async e=>t(new Uint8Array(await e.arrayBuffer())),"image/jpeg",.92))}function Zl(i){return new Promise(t=>i.toBlob(async e=>t(new Uint8Array(await e.arrayBuffer())),"image/png"))}const a0=/^a3\\map_data\\(gdt_\w+)\.rvmat$/i;function KA(i,t){return!i.rvmat||a0.test(i.rvmat)?`${t}\\data\\${i.id}.rvmat`:i.rvmat}function YA(i){const t=(e,n)=>`class Stage${e}
+{
+	texture="${i}_${n}.paa";
+	uvSource="tex";
+	class uvTransform
+	{
+		aside[]={5,0,0};
+		up[]={0,5,0};
+		dir[]={0,0,0};
+		pos[]={0,0,0};
+	};
+};
+`;return`ambient[]={1,1,1,1};
+diffuse[]={1,1,1,1};
+forcedDiffuse[]={0,0,0,0};
 specular[]={0,0,0,0};
-specularPower=0;
-class Stage0
-{
-	texture="${i}_nopx.paa";
-	texGen=0;
-};
-class Stage1
-{
-	texture="${i}_co.paa";
-	texGen=1;
-};
-class TexGen0
-{
-	uvSource="tex";
-	class uvTransform
-	{
-		aside[]={1,0,0};
-		up[]={0,1,0};
-		dir[]={0,0,1};
-		pos[]={0,0,0};
-	};
-};
-class TexGen1
-{
-	uvSource="tex";
-	class uvTransform
-	{
-		aside[]={10,0,0};
-		up[]={0,10,0};
-		dir[]={0,0,10};
-		pos[]={0,0,0};
-	};
-};
-`}function JA(i){const t={};for(const e of i){const n=a0.exec(e.rvmat||"");n&&(t[`${e.id}.rvmat`]=YA(`a3\\map_data\\${n[1]}`))}return t}function QA(i){const e=document.createElement("canvas");e.width=512,e.height=Math.max(64,16+28*i.length);const n=e.getContext("2d");return n.fillStyle="#ffffff",n.fillRect(0,0,e.width,e.height),n.font="16px sans-serif",n.textBaseline="middle",i.forEach((s,r)=>{const a=8+r*28;n.fillStyle=`rgb(${s.mask.join(",")})`,n.fillRect(8,a+2,40,22),n.strokeStyle="#000000",n.strokeRect(8.5,a+2.5,40,22),n.fillStyle="#000000",n.fillText(`${s.id}  (${s.mask.join(", ")})`,60,a+28/2)}),e}function $A(i,t){let e=`// Généré par TerraForge.
+specularPower=1;
+emmisive[]={0,0,0,0};
+PixelShaderID="NormalMapDiffuse";
+VertexShaderID="NormalMapDiffuseAlpha";
+`+t(1,"nopx")+t(2,"co")}function JA(i){const t={};for(const e of i){const n=a0.exec(e.rvmat||"");n&&(t[`${e.id}.rvmat`]=YA(`a3\\map_data\\${n[1]}`))}return t}function QA(i){const e=document.createElement("canvas");e.width=512,e.height=Math.max(64,16+28*i.length);const n=e.getContext("2d");return n.fillStyle="#ffffff",n.fillRect(0,0,e.width,e.height),n.font="16px sans-serif",n.textBaseline="middle",i.forEach((s,r)=>{const a=8+r*28;n.fillStyle=`rgb(${s.mask.join(",")})`,n.fillRect(8,a+2,40,22),n.strokeStyle="#000000",n.strokeRect(8.5,a+2.5,40,22),n.fillStyle="#000000",n.fillText(`${s.id}  (${s.mask.join(", ")})`,60,a+28/2)}),e}function $A(i,t){let e=`// Généré par TerraForge.
 class Layers
 {
 `;for(const n of i)e+=`	class ${n.id}

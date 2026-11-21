@@ -132,46 +132,31 @@ export function surfaceMaterial(su, tag) {
   if (!su.rvmat || A3_GDT.test(su.rvmat)) return `${tag}\\data\\${su.id}.rvmat`;
   return su.rvmat;
 }
+// Même forme que les gdt_*.rvmat texte d'Arma 3 (a3\\map_data_exp) : normale en Stage1, couleur en
+// Stage2. Avec un autre ordre, Terrain Builder génère des couches sans texture de relief.
 export function groundRvmat(texBase) {
-  return `ambient[]={0.9,0.9,0.9,1};
-diffuse[]={0.9,0.9,0.9,1};
-forcedDiffuse[]={0.02,0.02,0.02,1};
-emmisive[]={0,0,0,0};
-specular[]={0,0,0,0};
-specularPower=0;
-class Stage0
+  const stage = (n, suffix) => `class Stage${n}
 {
-\ttexture="${texBase}_nopx.paa";
-\ttexGen=0;
-};
-class Stage1
-{
-\ttexture="${texBase}_co.paa";
-\ttexGen=1;
-};
-class TexGen0
-{
+\ttexture="${texBase}_${suffix}.paa";
 \tuvSource="tex";
 \tclass uvTransform
 \t{
-\t\taside[]={1,0,0};
-\t\tup[]={0,1,0};
-\t\tdir[]={0,0,1};
-\t\tpos[]={0,0,0};
-\t};
-};
-class TexGen1
-{
-\tuvSource="tex";
-\tclass uvTransform
-\t{
-\t\taside[]={10,0,0};
-\t\tup[]={0,10,0};
-\t\tdir[]={0,0,10};
+\t\taside[]={5,0,0};
+\t\tup[]={0,5,0};
+\t\tdir[]={0,0,0};
 \t\tpos[]={0,0,0};
 \t};
 };
 `;
+  return `ambient[]={1,1,1,1};
+diffuse[]={1,1,1,1};
+forcedDiffuse[]={0,0,0,0};
+specular[]={0,0,0,0};
+specularPower=1;
+emmisive[]={0,0,0,0};
+PixelShaderID="NormalMapDiffuse";
+VertexShaderID="NormalMapDiffuseAlpha";
+` + stage(1, 'nopx') + stage(2, 'co');
 }
 // Fichiers .rvmat à écrire dans <carte>\data pour les surfaces vanilla d'Arma 3.
 export function surfaceRvmats(surfaces) {
