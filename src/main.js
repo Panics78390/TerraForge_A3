@@ -129,7 +129,7 @@ const toolSettings = {
   waterDepth: 4,
   surface: 0,
   paintHardness: 0.8,
-  placeLib: 'house',
+  placeLib: null,
   placeRandomRot: true,
   scatter: {
     density: 250,     // arbres / hectare
@@ -137,7 +137,7 @@ const toolSettings = {
     scaleMin: 0.8, scaleMax: 1.25,
     maxSlope: 35,
     avoidWater: true,
-    species: { pine: 3, beech: 2, oak: 1, bush: 2 },
+    species: {},
   },
   roadType: 1,
 };
@@ -540,7 +540,7 @@ function renderPanel() {
     case 'scatter': {
       const S = toolSettings.scatter;
       panelBody.append(note('Peins une forêt ou une zone de végétation. Règle le <b>mélange d\'essences</b> avec les curseurs (0 = absent). Maintiens <b>Maj</b> pour gommer.'));
-      panelBody.append(h3('Mélange'), libraryList(null, null, true));
+      panelBody.append(h3('Mélange'), objects.library.length ? libraryList(null, null, true) : note('Bibliothèque vide : ajoute d\'abord des arbres depuis <b>🎮 Modèles Arma 3</b> (catalogue du bas), puis règle ici leur proportion.'));
       panelBody.append(h3('Répartition'));
       panelBody.append(slider('Densité (/ha)', () => S.density, (v) => (S.density = v), 5, 800, 5));
       panelBody.append(slider('Espacement min (m)', () => S.spacing, (v) => (S.spacing = v), 1, 30, 0.5));
@@ -870,6 +870,10 @@ function renderAssets() {
     (!assetUI.cat || (e.cat || 'Divers') === assetUI.cat) &&
     (!assetUI.filter || `${e.name} ${e.tbName}`.toLowerCase().includes(assetUI.filter)));
   assetsEl.querySelector('.count').textContent = `${list.length} / ${objects.library.length} modèles`;
+  if (!objects.library.length) {
+    asGrid.innerHTML = `<div class="as-empty">Ta bibliothèque est vide.<br>Clique sur <b>🎮 Modèles Arma 3</b> pour indiquer où sont tes modèles (.pbo ou dossier), puis clique sur ceux que tu veux utiliser : ils s'ajoutent ici.</div>`;
+    return;
+  }
   for (const e of list) {
     const card = document.createElement('div');
     card.className = 'as-card' + (state.tool === 'place' && e.id === toolSettings.placeLib ? ' active' : '') + (e.p3d && !e._missing ? ' real' : '');
@@ -1001,7 +1005,7 @@ async function doGeo() {
       }
       setBusy('Construction de la carte…');
       await tick();
-      buildGeoMap(cfg, heights, osm, sat);
+      await buildGeoMap(cfg, heights, osm, sat);
     });
   } catch (err) {
     console.error(err);
@@ -1011,7 +1015,7 @@ async function doGeo() {
   else toast(`Carte créée : ${roads.roads.length} routes, ${objects.objects.length.toLocaleString('fr-FR')} objets`, 4000);
 }
 
-function buildGeoMap(cfg, heights, osm, sat = null) {
+async function buildGeoMap(cfg, heights, osm, sat = null) {
   terrain.surfaces = SURFACE_SETS.altis.surfaces.map((s) => ({ ...s }));
   terrain.init(cfg.grid, cfg.cell, cfg.maskRes);
   if (heights) terrain.heights.set(heights); else terrain.heights.fill(10);
@@ -1034,6 +1038,16 @@ function buildGeoMap(cfg, heights, osm, sat = null) {
   terrain.redrawSurface(0, 0, R - 1, R - 1);
 
   const list = [];
+  // La bibliothèque démarre vide : on ajoute seulement les modèles dont l'import a besoin
+  // (vrai modèle si la source Arma 3 est connectée, forme simplifiée sinon).
+  const need = [];
+  if (osm.buildings.length) need.push('house');
+  if (cfg.trees && forestMask) need.push('pine', 'beech', 'oak');
+  for (const id of need) {
+    if (objects.entry(id)) continue;
+    const d = DEFAULT_LIBRARY.find((e) => e.id === id);
+    if (d) await objects.addLibraryEntry({ ...d }, false);
+  }
   // Bâtiments
   for (const b of osm.buildings.slice(0, 20000))
     list.push({ lib: 'house', x: b.x, z: b.z, rot: b.rot, scale: Math.min(2.5, Math.max(0.6, Math.sqrt(b.area) / 9)) });
@@ -1296,7 +1310,7 @@ function esc(s) {
 // Démarrage
 // ======================================================================
 (async function start() {
-  await objects.setLibrary(DEFAULT_LIBRARY.map((e) => ({ ...e })));
+  await objects.setLibrary([]);
   resize();
   setTool('raise');
   renderAssets();

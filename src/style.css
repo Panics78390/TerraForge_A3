@@ -174,3 +174,4 @@ dialog textarea { flex: 1; min-height: 130px; background: var(--bg); color: var(
 .as-card.bad { opacity: .45; }
 .as-card.bad img { background: repeating-linear-gradient(45deg, #2a2f36 0 6px, #20242a 6px 12px); }
 dialog code { background: var(--bg); padding: 1px 4px; border-radius: 3px; font-size: 11px; }
+.as-empty { margin: auto; text-align: center; color: var(--muted); line-height: 1.7; max-width: 560px; }
