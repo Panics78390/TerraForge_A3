@@ -1530,11 +1530,31 @@ function footprint(id) {
   return { hx: Math.max(0.5, (box.max.x - box.min.x) / 2), hz: Math.max(0.5, (box.max.z - box.min.z) / 2) };
 }
 
-// Pose une maison par bâtiment OSM, sans chevauchement entre maisons ni avec les routes.
-// Chaque maison est mise à l'échelle pour tenir dans l'emprise réelle du bâtiment ;
-// si elle touche encore une voisine ou une route, on la réduit, sinon on l'abandonne.
-function placeBuildings(osm, libId) {
-  const fp = footprint(libId);
+// Modèles utilisés pour les bâtiments du monde réel. Ceux de GEO_EXTRA ne sont ajoutés
+// que si le vrai modèle est trouvé dans la source Arma 3 connectée.
+const GEO_BUILDINGS = ['house', 'house2', 'housebig', 'housebig2', 'stonehouse', 'stoneshed', 'shop', 'garage', 'slum', 'shedbig'];
+const GEO_EXTRA = [
+  ['geo_stonebig', 'Grande maison en pierre', 'i_Stone_HouseBig_V1_F'],
+  ['geo_shop2', 'Boutique 2', 'i_Shop_02_V1_F'],
+  ['geo_addon', 'Annexe', 'i_Addon_02_V1_F'],
+  ['geo_housesmall3', 'Petite maison 3', 'i_House_Small_03_V1_F'],
+  ['geo_unfinished1', 'Immeuble en chantier', 'Unfinished_Building_01_F'],
+  ['geo_unfinished2', 'Grand immeuble en chantier', 'Unfinished_Building_02_F'],
+  ['geo_offices', 'Bureaux', 'Offices_01_V1_F'],
+  ['geo_shedind', 'Hangar industriel', 'i_Shed_Ind_F'],
+  ['geo_shedsmall', 'Petit hangar', 'Shed_Small_F'],
+  ['geo_metalshed', 'Abri en tôle', 'Metal_Shed_F'],
+  ['geo_carservice', 'Garage automobile', 'CarService_F'],
+  ['geo_factory', 'Usine', 'Factory_Main_F'],
+];
+
+// Pose des bâtiments à la place de ceux d'OpenStreetMap, sans chevauchement entre eux
+// ni avec les routes. Pour chaque emprise réelle, on choisit le modèle dont la taille
+// et la forme s'en approchent le plus (avec un peu de hasard entre modèles équivalents),
+// toujours à sa taille d'origine (échelle 1). Une emprise bien plus grande que le modèle (maisons mitoyennes,
+// entrepôt) reçoit plusieurs bâtiments côte à côte.
+function placeBuildings(osm, libIds) {
+  const models = libIds.filter((id) => objects.entry(id)).map((id) => ({ id, ...footprint(id) }));
   const CELL = 24, GAP = 0.6;
   const grid = new Map();   // rectangles posés
   const rgrid = new Map();  // points de route { x, z, r }
@@ -1551,7 +1571,7 @@ function placeBuildings(osm, libId) {
     for (const p of roads.sample(r, 3)) put(rgrid, p.x, p.z, { x: p.x, z: p.z, r: hw });
   }
   // rectangle orienté : centre, axes, demi-tailles (rot autour de Y comme dans la scène)
-  const rect = (x, z, rot, s) => { const c = Math.cos(rot), sn = Math.sin(rot); return { x, z, ax: c, az: -sn, bx: sn, bz: c, hx: fp.hx * s, hz: fp.hz * s }; };
+  const rect = (x, z, rot, hx, hz) => { const c = Math.cos(rot), sn = Math.sin(rot); return { x, z, ax: c, az: -sn, bx: sn, bz: c, hx, hz }; };
   const inRect = (R, x, z, m) => { const dx = x - R.x, dz = z - R.z; return Math.abs(dx * R.ax + dz * R.az) <= R.hx + m && Math.abs(dx * R.bx + dz * R.bz) <= R.hz + m; };
   const overlap = (A, B) => {
     const dx = B.x - A.x, dz = B.z - A.z;
@@ -1564,25 +1584,55 @@ function placeBuildings(osm, libId) {
   };
   const free = (R) => {
     const rad = Math.hypot(R.hx, R.hz);
-    for (const o of near(grid, R.x, R.z, rad + 40)) if (overlap(R, o)) return false;
+    for (const o of near(grid, R.x, R.z, rad + 60)) if (overlap(R, o)) return false;
     for (const p of near(rgrid, R.x, R.z, rad + 8)) if (inRect(R, p.x, p.z, p.r + 0.5)) return false;
     return true;
   };
   const list = [];
   let skipped = 0;
+  const rnd = mulberry32(4242);
   const sorted = osm.buildings.slice(0, 20000).sort((a, b) => b.area - a.area);
   for (const b of sorted) {
+    if (!models.length) break;
     const len = b.len || Math.sqrt(b.area) * 1.2, wid = b.wid || Math.sqrt(b.area) / 1.2;
-    // la maison doit tenir dans l'emprise réelle (même échelle sur les deux axes)
-    let s = Math.min(2.5, Math.max(0.5, Math.min(len / (2 * fp.hx), wid / (2 * fp.hz))));
-    let ok = null;
-    for (let k = 0; k < 5 && s >= 0.45; k++, s *= 0.85) { const R = rect(b.x, b.z, b.rot, s); if (free(R)) { ok = R; break; } }
-    if (!ok) { skipped++; continue; }
-    put(grid, ok.x, ok.z, ok);
-    list.push({ lib: libId, x: b.x, z: b.z, rot: b.rot, scale: +(ok.hx / fp.hx).toFixed(3) });
+    // Candidats : chaque modèle, dans le sens de l'emprise ou tourné d'un quart de tour.
+    const cands = [];
+    for (const m of models) for (const turn of [0, 1]) {
+      const a = turn ? m.hz : m.hx, c = turn ? m.hx : m.hz; // demi-tailles le long / en travers de l'emprise
+      const raw = Math.min(len / (2 * a), wid / (2 * c));
+      // écart de taille (un modèle qui déborde de l'emprise est plus pénalisé) + écart de forme
+      const score = Math.abs(Math.log(raw)) * (raw < 1 ? 2 : 1) + 0.35 * Math.abs(Math.log((a / c) / (len / wid))) + rnd() * 0.2;
+      cands.push({ m, turn, a, c, score });
+    }
+    cands.sort((p, q) => p.score - q.score);
+    const ca = Math.cos(-b.rot), sa = Math.sin(-b.rot);
+    let done = false;
+    for (const cd of cands.slice(0, 6)) {
+      {
+        const s = 1; // les modèles gardent toujours leur taille d'origine
+        const L = 2 * cd.a, W = 2 * cd.c;
+        const n = Math.max(1, Math.min(10, Math.floor(len / (L + GAP + 0.05))));
+        const rows = Math.max(1, Math.min(3, Math.floor(wid / (W + GAP + 0.05))));
+        const rot = b.rot + (cd.turn ? Math.PI / 2 : 0);
+        let any = false;
+        for (let i = 0; i < n; i++) for (let j = 0; j < rows; j++) {
+          const u = (i - (n - 1) / 2) * (len / n), v = (j - (rows - 1) / 2) * (wid / rows);
+          const x = b.x + u * ca - v * sa, z = b.z + u * sa + v * ca;
+          const R = rect(x, z, rot, cd.m.hx * s, cd.m.hz * s);
+          if (!free(R)) continue;
+          put(grid, x, z, R);
+          list.push({ lib: cd.m.id, x, z, rot, scale: 1 });
+          any = true;
+        }
+        if (any) done = true;
+      }
+      if (done) break;
+    }
+    if (!done) skipped++;
   }
-  const hits = (x, z, m) => { for (const o of near(grid, x, z, 45)) if (inRect(o, x, z, m)) return true; return false; };
-  return { list, skipped, hits };
+  const hits = (x, z, m) => { for (const o of near(grid, x, z, 60)) if (inRect(o, x, z, m)) return true; return false; };
+  const onRoad = (x, z, m) => { for (const p of near(rgrid, x, z, m + 8)) if (Math.hypot(p.x - x, p.z - z) < p.r + m) return true; return false; };
+  return { list, skipped, hits, onRoad };
 }
 
 async function buildGeoMap(cfg, heights, osm, sat = null) {
@@ -1611,34 +1661,77 @@ async function buildGeoMap(cfg, heights, osm, sat = null) {
   // La bibliothèque démarre vide : on ajoute seulement les modèles dont l'import a besoin
   // (vrai modèle si la source Arma 3 est connectée, forme simplifiée sinon).
   const need = [];
-  if (osm.buildings.length) need.push('house');
-  if (cfg.trees && forestMask) need.push('pine', 'beech', 'oak');
+  if (osm.buildings.length) need.push(...GEO_BUILDINGS);
+  if (cfg.trees) need.push('pine', 'beech', 'oak', 'olive', 'bush', 'bush2');
+  const geoIds = [...GEO_BUILDINGS];
+  let nLoad = 0;
+  const load = async (entry) => {
+    setBusy(`Chargement des modèles (${++nLoad})…`);
+    await objects.addLibraryEntry(entry, false);
+    await tick();
+  };
   for (const id of need) {
     if (objects.entry(id)) continue;
     const d = DEFAULT_LIBRARY.find((e) => e.id === id);
-    if (d) await objects.addLibraryEntry({ ...d }, false);
+    if (d) await load({ ...d });
   }
+  if (osm.buildings.length && a3.count) for (const [id, name, tbName] of GEO_EXTRA) {
+    if (!a3.byName.get(tbName.toLowerCase())) continue;
+    if (!objects.entry(id)) await load({ id, name, tbName, shape: 'box', color: '#b9b2a4', height: 6, w: 10, d: 8, cat: 'Bâtiments' });
+    geoIds.push(id);
+  }
+  setBusy('Construction de la carte…');
+  await tick();
   // Bâtiments
-  const placed = placeBuildings(osm, 'house');
+  const placed = placeBuildings(osm, geoIds);
   for (const p of placed.list) list.push(p);
-  // Arbres dans les forêts
-  if (cfg.trees && forestMask) {
-    let cells = 0;
-    for (let k = 0; k < R * R; k++) cells += forestMask[k];
+  if (cfg.trees) {
     const px = terrain.size / R;
-    const want = Math.min(60000, Math.round(((cells * px * px) / 10000) * cfg.treeDensity));
-    const mix = [['pine', 3], ['beech', 2], ['oak', 1]].filter(([id]) => objects.entry(id));
     const rnd = mulberry32(12345);
-    for (let n = 0, tries = want * 30; n < want && tries > 0 && mix.length; tries--) {
-      const k = Math.floor(rnd() * R * R);
-      if (!forestMask[k]) continue;
-      const [wx, wz] = terrain.maskToWorld(k % R, Math.floor(k / R));
-      const x = wx + (rnd() - 0.5) * px, z = wz + (rnd() - 0.5) * px;
-      if (!terrain.inside(x, z) || terrain.heightAt(x, z) < 0.5 || terrain.slopeAt(x, z) > 42) continue;
-      if (placed.hits(x, z, 2.5)) continue; // pas d'arbre dans une maison
-      let v = rnd() * 6, id = mix[0][0];
-      for (const [i, w] of mix) { v -= w; if (v <= 0) { id = i; break; } }
-      list.push({ lib: id, x, z, rot: rnd() * Math.PI * 2, scale: 0.8 + rnd() * 0.5 });
+    const pick = (mix) => {
+      let total = 0;
+      for (const [, w] of mix) total += w;
+      let v = rnd() * total;
+      for (const [i, w] of mix) { v -= w; if (v <= 0) return i; }
+      return mix[0][0];
+    };
+    // Arbres dans les forêts
+    if (forestMask) {
+      let cells = 0;
+      for (let k = 0; k < R * R; k++) cells += forestMask[k];
+      const want = Math.min(60000, Math.round(((cells * px * px) / 10000) * cfg.treeDensity));
+      const mix = [['pine', 3], ['beech', 2], ['oak', 1]].filter(([id]) => objects.entry(id));
+      for (let n = 0, tries = want * 30; n < want && tries > 0 && mix.length; tries--) {
+        const k = Math.floor(rnd() * R * R);
+        if (!forestMask[k]) continue;
+        const [wx, wz] = terrain.maskToWorld(k % R, Math.floor(k / R));
+        const x = wx + (rnd() - 0.5) * px, z = wz + (rnd() - 0.5) * px;
+        if (!terrain.inside(x, z) || terrain.heightAt(x, z) < 0.5 || terrain.slopeAt(x, z) > 42) continue;
+        if (placed.hits(x, z, 2.5) || placed.onRoad(x, z, 2)) continue; // pas d'arbre dans une maison ni sur une route
+        list.push({ lib: pick(mix), x, z, rot: rnd() * Math.PI * 2, scale: 0.8 + rnd() * 0.5 });
+        n++;
+      }
+    }
+    // Végétation éparse hors forêt : arbres isolés et buissons, jamais sur l'eau,
+    // les zones bâties en dur, les champs cultivés, les routes ou les maisons.
+    const bare = new Uint8Array(R * R);
+    for (const cls of ['water', 'concrete', 'sand', 'rock']) {
+      const m = rasterizeAreas(osm.areas, cls, terrain);
+      if (m) for (let k = 0; k < R * R; k++) if (m[k]) bare[k] = 1;
+    }
+    const farm = rasterizeAreas(osm.areas.filter((a) => a.farm), 'drygrass', terrain);
+    if (farm) for (let k = 0; k < R * R; k++) if (farm[k]) bare[k] = 1;
+    const mix = [['oak', 2], ['beech', 2], ['olive', 2], ['pine', 1], ['bush', 4], ['bush2', 3]].filter(([id]) => objects.entry(id));
+    const perHa = Math.max(1, Math.min(8, cfg.treeDensity * 0.04));
+    const want = Math.min(25000, Math.round((terrain.size * terrain.size / 10000) * perHa));
+    for (let n = 0, tries = want * 6; n < want && tries > 0 && mix.length; tries--) {
+      const x = rnd() * terrain.size, z = rnd() * terrain.size;
+      const [mx, my] = terrain.worldToMask(x, z);
+      const k = Math.min(R - 1, Math.max(0, Math.floor(my))) * R + Math.min(R - 1, Math.max(0, Math.floor(mx)));
+      if (bare[k] || (forestMask && forestMask[k])) continue;
+      if (!terrain.inside(x, z) || terrain.heightAt(x, z) < 0.5 || terrain.slopeAt(x, z) > 38) continue;
+      if (placed.hits(x, z, 3) || placed.onRoad(x, z, 3)) continue;
+      list.push({ lib: pick(mix), x, z, rot: rnd() * Math.PI * 2, scale: 0.8 + rnd() * 0.5 });
       n++;
     }
   }
@@ -2226,7 +2319,7 @@ function esc(s) {
   loop();
   window.__tf = state; // pratique pour le débogage dans la console
   window.__tfCreate = createMap;
-  window.__tfGeo = { buildGeoMap, fetchElevation, parseOSM, placeBuildings };
+  window.__tfGeo = { buildGeoMap, fetchElevation, fetchOSM, parseOSM, placeBuildings };
   window.__tfDefaults = defaultParams;
   window.__tfA3 = { a3, connectA3, useA3Model, camera, controls, parseObjectLines };
   if (!new URLSearchParams(location.search).has('nowizard')) chooseGame(true).then(() => doNew(true));

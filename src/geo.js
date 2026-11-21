@@ -386,60 +386,94 @@ async function loadSat(cfg, R, source, progress) {
 // ---------- OpenStreetMap ----------
 // La demande est découpée (routes, occupation du sol, bâtiments par quart de carte)
 // pour rester légère : les serveurs Overpass publics refusent les grosses requêtes.
+// Une partie refusée est redemandée sur les autres serveurs, puis recoupée en quatre
+// morceaux plus petits. Les réponses reçues sont gardées en mémoire : relancer
+// « Monde réel » sur la même zone ne redemande que ce qui manquait.
 // Renvoie { elements, failed: [noms des parties manquantes] }.
+const osmCache = new Map(); // requête -> éléments
+const wait = (ms) => new Promise((res) => setTimeout(res, ms));
+
 export async function fetchOSM(cfg, progress = () => {}) {
   const S = cfg.grid * cfg.cell;
   const [[s, w], [n, e]] = boundsOf(cfg.lat, cfg.lon, S);
-  const box = (s0, w0, n0, e0) => `(${s0.toFixed(6)},${w0.toFixed(6)},${n0.toFixed(6)},${e0.toFixed(6)})`;
-  const bb = box(s, w, n, e);
+  const box = ([s0, w0, n0, e0]) => `(${s0.toFixed(6)},${w0.toFixed(6)},${n0.toFixed(6)},${e0.toFixed(6)})`;
+  const split = ([s0, w0, n0, e0], k) => {
+    const out = [];
+    for (let a = 0; a < k; a++) for (let b = 0; b < k; b++)
+      out.push([s0 + ((n0 - s0) * a) / k, w0 + ((e0 - w0) * b) / k, s0 + ((n0 - s0) * (a + 1)) / k, w0 + ((e0 - w0) * (b + 1)) / k]);
+    return out;
+  };
+  const all = [s, w, n, e];
+  const qRoads = (bb) => `way["highway"]${bb};`;
+  const qLand = (bb) =>
+    `way["natural"~"^(wood|water|scrub|heath|beach|sand|bare_rock|scree|wetland)$"]${bb};` +
+    `way["landuse"~"^(forest|farmland|meadow|grass|orchard|vineyard|industrial|commercial|retail|quarry|reservoir|basin)$"]${bb};` +
+    `relation["type"="multipolygon"]["natural"~"^(wood|water|scrub|wetland)$"]${bb};` +
+    `relation["type"="multipolygon"]["landuse"~"^(forest|farmland|meadow|reservoir)$"]${bb};`;
+  const qBuild = (bb) => `way["building"]${bb};`;
   const tasks = [];
-  if (cfg.roads || cfg.paths) tasks.push({ name: 'routes', q: `way["highway"]${bb};` });
-  if (cfg.landuse || cfg.trees) tasks.push({
-    name: 'forêts et occupation du sol',
-    q: `way["natural"~"^(wood|water|scrub|heath|beach|sand|bare_rock|scree|wetland)$"]${bb};` +
-       `way["landuse"~"^(forest|farmland|meadow|grass|orchard|vineyard|industrial|commercial|retail|quarry|reservoir|basin)$"]${bb};` +
-       `relation["type"="multipolygon"]["natural"~"^(wood|water|scrub|wetland)$"]${bb};` +
-       `relation["type"="multipolygon"]["landuse"~"^(forest|farmland|meadow|reservoir)$"]${bb};`,
-  });
+  if (cfg.roads || cfg.paths) tasks.push({ name: 'routes', q: qRoads, bbox: all });
+  if (cfg.landuse || cfg.trees) tasks.push({ name: 'forêts et occupation du sol', q: qLand, bbox: all });
   if (cfg.buildings) {
     const k = S > 9000 ? 4 : S > 5000 ? 3 : 2;
-    for (let a = 0; a < k; a++) for (let b = 0; b < k; b++)
-      tasks.push({
-        name: `bâtiments (zone ${a * k + b + 1}/${k * k})`,
-        q: `way["building"]${box(s + ((n - s) * a) / k, w + ((e - w) * b) / k, s + ((n - s) * (a + 1)) / k, w + ((e - w) * (b + 1)) / k)};`,
-      });
+    split(all, k).forEach((bbox, i) => tasks.push({ name: `bâtiments (zone ${i + 1}/${k * k})`, q: qBuild, bbox }));
   }
-  const seen = new Set(), elements = [], failed = [];
+  const seen = new Set(), elements = [];
+  const keep = (list) => { for (const el of list) { const key = el.type[0] + el.id; if (!seen.has(key)) { seen.add(key); elements.push(el); } } };
   let server = 0;
-  for (let t = 0; t < tasks.length; t++) {
-    const task = tasks[t];
-    const query = `[out:json][timeout:40];(${task.q});out geom;`;
-    let ok = false;
-    for (let attempt = 0; attempt < 4 && !ok; attempt++) {
+  // Un morceau : jusqu'à `tries` essais en changeant de serveur, avec une pause qui s'allonge.
+  const run = async (q, bbox, label, tries) => {
+    const query = `[out:json][timeout:60];(${q(box(bbox))});out geom;`;
+    if (osmCache.has(query)) { keep(osmCache.get(query)); return true; }
+    for (let attempt = 0; attempt < tries; attempt++) {
       const ctl = new AbortController();
       const t0 = Date.now();
-      const label = `OpenStreetMap ${t + 1}/${tasks.length} : ${task.name}${attempt ? ` (essai ${attempt + 1})` : ''}`;
-      progress(`${label}…`);
+      const text = `${label}${attempt ? ` (essai ${attempt + 1})` : ''}`;
+      progress(`${text}…`);
       const timer = setInterval(() => {
         const sec = Math.round((Date.now() - t0) / 1000);
-        progress(`${label}… ${sec} s`);
-        if (sec >= 50) ctl.abort();
+        progress(`${text}… ${sec} s`);
+        if (sec >= 70) ctl.abort();
       }, 1000);
+      const url = OVERPASS[server % OVERPASS.length];
       try {
-        const r = await fetch(OVERPASS[server % OVERPASS.length], { method: 'POST', signal: ctl.signal, body: 'data=' + encodeURIComponent(query), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+        const r = await fetch(url, { method: 'POST', signal: ctl.signal, body: 'data=' + encodeURIComponent(query), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
         if (!r.ok) throw new Error(r.status);
         const json = await r.json();
-        if (json.remark && !(json.elements || []).length) throw new Error(json.remark);
-        for (const el of json.elements || []) {
-          const key = el.type[0] + el.id;
-          if (!seen.has(key)) { seen.add(key); elements.push(el); }
-        }
-        ok = true;
+        // Une « remark » signale une réponse coupée (délai ou mémoire dépassés) : on ne s'y fie pas.
+        if (json.remark) throw new Error(json.remark);
+        const list = json.elements || [];
+        osmCache.set(query, list);
+        keep(list);
+        return true;
       } catch (err) {
-        console.warn('Overpass', OVERPASS[server % OVERPASS.length], err);
+        console.warn('Overpass', url, err);
         server++; // serveur suivant
-        await new Promise((res) => setTimeout(res, 1500));
+        clearInterval(timer);
+        if (attempt < tries - 1) {
+          const pause = Math.min(12, 2 + attempt * 3);
+          progress(`${label} : serveur occupé, nouvel essai dans ${pause} s…`);
+          await wait(pause * 1000);
+        }
       } finally { clearInterval(timer); }
+    }
+    return false;
+  };
+  // 1er passage : chaque partie entière.
+  const pending = [];
+  for (let t = 0; t < tasks.length; t++) {
+    const task = tasks[t];
+    if (!(await run(task.q, task.bbox, `OpenStreetMap ${t + 1}/${tasks.length} : ${task.name}`, 4))) pending.push(task);
+  }
+  // 2e passage : les parties refusées, recoupées en quatre morceaux plus légers.
+  const failed = [];
+  for (const task of pending) {
+    let ok = await run(task.q, task.bbox, `OpenStreetMap, rattrapage : ${task.name}`, 2);
+    if (!ok) {
+      ok = true;
+      const parts = split(task.bbox, 2);
+      for (let k = 0; k < parts.length; k++)
+        if (!(await run(task.q, parts[k], `OpenStreetMap, rattrapage : ${task.name} (morceau ${k + 1}/4)`, 4))) ok = false;
     }
     if (!ok) failed.push(task.name);
   }
@@ -467,6 +501,8 @@ function landClass(t) {
   if (lu === 'industrial' || lu === 'commercial' || lu === 'retail') return 'concrete';
   return null;
 }
+
+const FARM = new Set(['farmland', 'orchard', 'vineyard']);
 
 // Assemble les tronçons d'un multipolygone en anneaux fermés.
 function stitchRings(ways) {
@@ -529,14 +565,14 @@ export function parseOSM(json, cfg) {
         buildings.push({ x: cx + mu * ca - mv * sa, z: cz + mu * sa + mv * ca, rot: -ang, area, len: u1 - u0, wid: v1 - v0 });
       } else {
         const cls = landClass(t);
-        if (cls && pts.length >= 3) areas.push({ cls, rings: [pts] });
+        if (cls && pts.length >= 3) areas.push({ cls, rings: [pts], farm: FARM.has(t.landuse) });
       }
     } else if (el.type === 'relation' && el.members) {
       const cls = landClass(t);
       if (!cls) continue;
       const ways = el.members.filter((m) => m.type === 'way' && m.geometry && m.geometry.length > 1).map((m) => proj(m.geometry));
       const rings = stitchRings(ways);
-      if (rings.length) areas.push({ cls, rings });
+      if (rings.length) areas.push({ cls, rings, farm: FARM.has(t.landuse) });
     }
   }
   return { roads, buildings, areas };
