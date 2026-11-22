@@ -157,20 +157,50 @@ export class RoadManager {
     const band = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xffd400, transparent: true, opacity: 0.45, depthTest: false, side: THREE.DoubleSide }));
     band.renderOrder = 9;
     this.selGroup.add(band);
-    const at = ([x, z]) => new THREE.Vector3(x, this.terrain.heightAt(x, z) + 0.8, z);
+    const dk = road.bridge ? this.deck(road) : null;
+    let run = 0;
+    const at = ([x, z], k) => {
+      if (k > 0) run += Math.hypot(x - road.points[k - 1][0], z - road.points[k - 1][1]);
+      return new THREE.Vector3(x, this.surfaceAt(road, x, z, run, dk) + 0.8, z);
+    };
     const dots = (list, color, size) => {
       if (!list.length) return;
       const m = new THREE.Points(new THREE.BufferGeometry().setFromPoints(list), new THREE.PointsMaterial({ color, size, sizeAttenuation: false, depthTest: false }));
       m.renderOrder = 11;
       this.selGroup.add(m);
     };
-    dots(road.points.map(at), 0xffffff, 9);
-    dots(road.points.map(at), 0x1f6feb, 6);
-    if (road.points[this.activePoint]) dots([at(road.points[this.activePoint])], 0xff3b30, 13);
+    const handles = road.points.map(at);
+    dots(handles, 0xffffff, 9);
+    dots(handles, 0x1f6feb, 6);
+    if (handles[this.activePoint]) dots([handles[this.activePoint]], 0xff3b30, 13);
+  }
+
+  // Tablier d'un pont : droite tendue entre le sol de ses deux extrémités (on prend le
+  // point le plus haut juste avant la culée, le relief y étant déjà un peu en pente).
+  // Renvoie { L, h(d) } : longueur du tracé et altitude du tablier à la distance d du début.
+  deck(road) {
+    const p = road.points, T = this.terrain;
+    let L = 0;
+    for (let k = 1; k < p.length; k++) L += Math.hypot(p[k][0] - p[k - 1][0], p[k][1] - p[k - 1][1]);
+    const end = (a, b) => {
+      const dx = a[0] - b[0], dz = a[1] - b[1], l = Math.hypot(dx, dz) || 1;
+      let h = -Infinity;
+      for (const d of [0, T.cell, T.cell * 2]) h = Math.max(h, T.heightAt(a[0] + (dx / l) * d, a[1] + (dz / l) * d));
+      return h;
+    };
+    const h0 = end(p[0], p[1]), h1 = end(p[p.length - 1], p[p.length - 2]);
+    return { L, h0, h1, h: (d) => h0 + (h1 - h0) * (L > 0 ? Math.max(0, Math.min(1, d / L)) : 0) };
+  }
+
+  // Altitude de la chaussée au point (x, z) d'une route, à la distance d de son début.
+  surfaceAt(road, x, z, d, deck) {
+    const g = this.terrain.heightAt(x, z);
+    return deck ? Math.max(g, deck.h(d)) : g;
   }
 
   ribbon(road, t, acc) {
     const pts = this.sample(road, Math.max(2, this.terrain.cell * 0.75));
+    const deck = road.bridge && road.points.length >= 2 ? this.deck(road) : null;
     const { pos, idx, uv } = acc;
     const base = pos.length / 3;
     // Les textures de route d'Arma ont des bords transparents : la bande affichée est un peu plus large.
@@ -185,7 +215,7 @@ export class RoadManager {
       const nx = -dz / len, nz = dx / len;
       for (const s of [-1, 1]) {
         const x = pts[k].x + nx * hw * s, z = pts[k].z + nz * hw * s;
-        pos.push(x, this.terrain.heightAt(x, z) + 0.3, z);
+        pos.push(x, this.surfaceAt(road, x, z, dist, deck) + 0.3, z);
         uv.push(s < 0 ? 0 : 1, dist / (hw * 2));
       }
       if (k > 0) {
@@ -223,6 +253,7 @@ export class RoadManager {
   flattenUnder(roadList = this.roads, shoulder = 6) {
     const T = this.terrain;
     for (const road of roadList) {
+      if (road.bridge) continue; // un pont ne modifie pas le sol qu'il enjambe
       const t = this.type(road.type);
       const pts = this.sample(road, T.cell * 0.5);
       // Profil en long : altitude du sol lissée par moyenne glissante.

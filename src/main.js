@@ -1659,6 +1659,77 @@ const GEO_EXTRA = [
   ['geo_factory', 'Usine', 'Factory_Main_F'],
 ];
 
+// Modèles de pont Arma 3 : [id, nom, modèle]. Choisis selon la largeur de la route.
+const GEO_BRIDGES = [
+  ['geo_bridge_highway', 'Pont autoroutier', 'Bridge_HighWay_F'],
+  ['geo_bridge_asphalt', 'Pont routier', 'Bridge_Asphalt_F'],
+  ['geo_bridge_small', 'Petit pont', 'Bridge_01_F'],
+];
+
+// Mesure d'un modèle de pont : longueur (axe z), largeur, et hauteur de la chaussée
+// (le niveau qui porte la plus grande surface horizontale tournée vers le haut).
+function bridgeShape(id) {
+  const g = objects.groups.get(id);
+  if (!g) return null;
+  const box = new THREE.Box3(), tmp = new THREE.Box3(), hist = new Map();
+  const a = new THREE.Vector3(), b = new THREE.Vector3(), c = new THREE.Vector3(), n = new THREE.Vector3(), e = new THREE.Vector3();
+  for (const p of g.parts) {
+    const geo = p.geometry, pos = geo.attributes.position, idx = geo.index;
+    if (!geo.boundingBox) geo.computeBoundingBox();
+    box.union(tmp.copy(geo.boundingBox).applyMatrix4(p.matrix));
+    const cnt = idx ? idx.count : pos.count;
+    for (let t = 0; t + 2 < cnt; t += 3) {
+      a.fromBufferAttribute(pos, idx ? idx.getX(t) : t).applyMatrix4(p.matrix);
+      b.fromBufferAttribute(pos, idx ? idx.getX(t + 1) : t + 1).applyMatrix4(p.matrix);
+      c.fromBufferAttribute(pos, idx ? idx.getX(t + 2) : t + 2).applyMatrix4(p.matrix);
+      n.subVectors(b, a).cross(e.subVectors(c, a));
+      const area = n.length() / 2;
+      if (area < 1e-6 || Math.abs(n.y) / (2 * area) < 0.95) continue;
+      const y = Math.round(((a.y + b.y + c.y) / 3) * 5) / 5;
+      hist.set(y, (hist.get(y) || 0) + area);
+    }
+  }
+  if (box.isEmpty()) return null;
+  // On retient le plus haut des niveaux bien fournis : le dessus du tablier, pas son dessous.
+  let max = 0;
+  for (const v of hist.values()) max = Math.max(max, v);
+  let deck = 0, found = false;
+  for (const [y, v] of hist) if (v >= max * 0.6 && (!found || y > deck)) { deck = y; found = true; }
+  return { len: box.max.z - box.min.z, wid: box.max.x - box.min.x, deck };
+}
+
+// Pose un ou plusieurs modèles de pont le long de chaque pont d'OpenStreetMap, à la
+// hauteur du tablier. Les routes ainsi équipées sont marquées `deck` (pas de route au sol).
+function placeBridges(osm, models) {
+  const list = [];
+  if (!models.length) return list;
+  for (const r of osm.roads) {
+    if (!r.bridge || r.points.length < 2) continue;
+    const dk = roads.deck(r);
+    if (dk.L < 8) continue;
+    // routes et rues : pont routier ; chemins et sentiers : petit pont (à défaut, ce qui existe)
+    const pref = r.type === 3 || r.type === 5 ? ['geo_bridge_small', 'geo_bridge_asphalt', 'geo_bridge_highway'] : ['geo_bridge_asphalt', 'geo_bridge_highway', 'geo_bridge_small'];
+    const fit = pref.map((id) => models.find((m) => m.id === id)).find(Boolean);
+    const n = Math.max(1, Math.round(dk.L / fit.len));
+    const pitch = Math.atan2(dk.h1 - dk.h0, dk.L);
+    for (let k = 0; k < n; k++) {
+      // point du tracé à la distance voulue
+      let want = ((k + 0.5) * dk.L) / n, run = 0, x = r.points[0][0], z = r.points[0][1], dx = 1, dz = 0;
+      for (let i = 1; i < r.points.length; i++) {
+        const [ax, az] = r.points[i - 1], [bx, bz] = r.points[i], l = Math.hypot(bx - ax, bz - az);
+        if (l <= 0) continue;
+        dx = (bx - ax) / l; dz = (bz - az) / l;
+        if (run + l >= want || i === r.points.length - 1) { const u = Math.min(l, want - run); x = ax + dx * u; z = az + dz * u; break; }
+        run += l;
+      }
+      const dy = dk.h(want) - fit.deck - terrain.heightAt(x, z);
+      list.push({ lib: fit.id, x, z, rot: Math.atan2(dx, dz), scale: 1, dy: Math.round(dy * 100) / 100, ...(Math.abs(pitch) > 0.005 ? { rx: -pitch } : {}) });
+    }
+    r.deck = true;
+  }
+  return list;
+}
+
 // Pose des bâtiments à la place de ceux d'OpenStreetMap, sans chevauchement entre eux
 // ni avec les routes. Pour chaque emprise réelle, on choisit le modèle dont la taille
 // et la forme s'en approchent le plus (avec un peu de hasard entre modèles équivalents),
@@ -1791,11 +1862,20 @@ async function buildGeoMap(cfg, heights, osm, sat = null) {
     if (!objects.entry(id)) await load({ id, name, tbName, shape: 'box', color: '#b9b2a4', height: 6, w: 10, d: 8, cat: 'Bâtiments' });
     geoIds.push(id);
   }
+  // Ponts : seulement avec les vrais modèles Arma 3 (sinon la route est simplement surélevée).
+  const bridgeModels = [];
+  if (a3.count && osm.roads.some((r) => r.bridge)) for (const [id, name, tbName] of GEO_BRIDGES) {
+    if (!a3.byName.get(tbName.toLowerCase())) continue;
+    if (!objects.entry(id)) await load({ id, name, tbName, shape: 'box', color: '#9a9a9a', height: 2, w: 12, d: 40, cat: 'Ponts' });
+    const sh = objects.entry(id).p3d && !objects.entry(id)._missing ? bridgeShape(id) : null;
+    if (sh) bridgeModels.push({ id, ...sh });
+  }
   setBusy('Construction de la carte…');
   await tick();
   // Bâtiments
   const placed = placeBuildings(osm, geoIds);
   for (const p of placed.list) list.push(p);
+  for (const p of placeBridges(osm, bridgeModels)) list.push(p);
   if (cfg.trees) {
     const px = terrain.size / R;
     const rnd = mulberry32(12345);
@@ -2499,7 +2579,7 @@ function esc(s) {
   loop();
   window.__tf = state; // pratique pour le débogage dans la console
   window.__tfCreate = createMap;
-  window.__tfGeo = { buildGeoMap, fetchElevation, fetchOSM, parseOSM, placeBuildings };
+  window.__tfGeo = { buildGeoMap, fetchElevation, fetchOSM, parseOSM, placeBuildings, placeBridges, bridgeShape };
   window.__tfDefaults = defaultParams;
   window.__tfMcp = mcpApi;
   window.__tfA3 = { a3, connectA3, useA3Model, camera, controls, parseObjectLines };

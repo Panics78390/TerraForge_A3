@@ -215,7 +215,8 @@ export function objectsTXT(objects, library, T, off = DEFAULT_OFFSET) {
 
 // ---------- Routes : shapefile (polylignes) ----------
 export function roadsShapefile(roads, roadMgr, T, off = DEFAULT_OFFSET) {
-  const recs = roads.filter((r) => r.points.length >= 2).map((r) => {
+  // Les ponts posés comme objets portent leur propre chaussée : pas de route au sol dessous.
+  const recs = roads.filter((r) => r.points.length >= 2 && !r.deck).map((r) => {
     const pts = roadMgr.sample(r, 5).map((p) => [off.east + p.x, off.north + T.north(p.z)]);
     return { id: r.type, pts };
   });

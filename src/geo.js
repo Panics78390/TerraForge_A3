@@ -640,7 +640,8 @@ export function parseOSM(json, cfg) {
         if (type === 5 ? !cfg.paths : !cfg.roads) continue;
         // Découpe aux bords de la carte.
         let seg = [];
-        const flush = () => { if (seg.length >= 2) roads.push({ type, raw: true, points: seg }); seg = []; };
+        const bridge = !!t.bridge && t.bridge !== 'no';
+        const flush = () => { if (seg.length >= 2) roads.push({ type, raw: true, points: seg, ...(bridge ? { bridge: true } : {}) }); seg = []; };
         for (const p of pts) { if (inside(p)) seg.push([round(p[0]), round(p[1])]); else flush(); }
         flush();
       } else if (t.building && cfg.buildings) {
@@ -676,7 +677,28 @@ export function parseOSM(json, cfg) {
       if (rings.length) areas.push({ cls, rings, farm: FARM.has(t.landuse) });
     }
   }
-  return { roads, buildings, areas };
+  // Un pont est souvent découpé en plusieurs tronçons dans OpenStreetMap : on les recolle
+  // bout à bout pour que le tablier reste d'un seul tenant d'une culée à l'autre.
+  const br = roads.filter((r) => r.bridge);
+  const same = (a, b) => Math.abs(a[0] - b[0]) < 0.05 && Math.abs(a[1] - b[1]) < 0.05;
+  for (let again = true; again;) {
+    again = false;
+    outer: for (const a of br) {
+      if (a.dead) continue;
+      for (const b of br) {
+        if (b === a || b.dead || b.type !== a.type) continue;
+        const a0 = a.points[0], a1 = a.points[a.points.length - 1], b0 = b.points[0], b1 = b.points[b.points.length - 1];
+        if (same(a1, b0)) a.points = a.points.concat(b.points.slice(1));
+        else if (same(a1, b1)) a.points = a.points.concat(b.points.slice(0, -1).reverse());
+        else if (same(a0, b1)) a.points = b.points.concat(a.points.slice(1));
+        else if (same(a0, b0)) a.points = b.points.slice(1).reverse().concat(a.points);
+        else continue;
+        b.dead = true; again = true;
+        continue outer;
+      }
+    }
+  }
+  return { roads: roads.filter((r) => !r.dead), buildings, areas };
 }
 const round = (v) => Math.round(v * 100) / 100;
 
