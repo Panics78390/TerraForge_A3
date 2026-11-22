@@ -389,8 +389,19 @@ export class RoadManager {
     // Remodelage du sol : moyenne pondérée par cellule des altitudes voulues.
     const sum = new Float32Array(N * N), wsum = new Float32Array(N * N), wmax = new Float32Array(N * N);
     // Près d'une extrémité de pont, la route qui y arrive l'emporte sur celle qui passe dessous.
-    const ends = [];
-    for (const road of roadList) if (road.bridge && road.points.length >= 2) ends.push(road.points[0], road.points[road.points.length - 1]);
+    // Le sol au bout d'un pont est réservé à la route qui y arrive : celle qui passe dessous
+    // n'y touche pas (elle longe la culée comme un mur de soutènement).
+    const ends = [], reserved = new Set();
+    for (const road of roadList) {
+      if (!road.bridge || road.points.length < 2) continue;
+      const r = this.type(road.type).width / 2 + c;
+      for (const e of [road.points[0], road.points[road.points.length - 1]]) {
+        ends.push(e);
+        for (let j = Math.max(0, Math.floor((e[1] - r) / c)); j <= Math.min(N - 1, Math.ceil((e[1] + r) / c)); j++)
+          for (let i = Math.max(0, Math.floor((e[0] - r) / c)); i <= Math.min(N - 1, Math.ceil((e[0] + r) / c)); i++)
+            if (Math.hypot(i * c - e[0], j * c - e[1]) <= r) reserved.add(j * N + i);
+      }
+    }
     for (const { road, seq } of ways) {
       const core = this.type(road.type).width / 2 + c * 0.75, R = core + shoulder;
       const prio = [1, 3, 10, 30, 100][rank(road)];
@@ -401,8 +412,8 @@ export class RoadManager {
         for (let m = 1; m <= steps; m++) {
           const t = k === 0 ? 1 : m / steps;
           const px = X[a] + (X[b] - X[a]) * t, pz = Z[a] + (Z[b] - Z[a]) * t, target = h[a] + (h[b] - h[a]) * t;
-          let boost = prio;
-          for (const e of mine) if (Math.hypot(e[0] - px, e[1] - pz) < 12) boost = prio * 3;
+          let own = false;
+          for (const e of mine) if (Math.hypot(e[0] - px, e[1] - pz) < 16) own = true;
           const i0 = Math.max(0, Math.floor((px - R) / c)), i1 = Math.min(N - 1, Math.ceil((px + R) / c));
           const j0 = Math.max(0, Math.floor((pz - R) / c)), j1 = Math.min(N - 1, Math.ceil((pz + R) / c));
           for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
@@ -410,7 +421,8 @@ export class RoadManager {
             if (d >= R) continue;
             let w = d <= core ? 1 : 1 - (d - core) / shoulder;
             w = w * w * (3 - 2 * w);
-            const q = j * N + i, ww = w * w * w * w * boost;
+            const q = j * N + i, ww = w * w * w * w * prio;
+            if (!own && reserved.has(q)) continue;
             sum[q] += target * ww; wsum[q] += ww;
             if (w > wmax[q]) wmax[q] = w;
           }
