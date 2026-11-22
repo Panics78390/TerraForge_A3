@@ -16,7 +16,7 @@ function createWindow() {
     icon: path.join(__dirname, '..', 'build', 'icon.png'),
     autoHideMenuBar: true,
     show: false,
-    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
+    webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, backgroundThrottling: false },
   });
   mainWin = win;
   win.webContents.on('console-message', (_e, level, message, line) => {
@@ -100,7 +100,9 @@ async function runTool(tool, args) {
   }
   if (!/^[a-z_]+$/.test(tool) || tool.startsWith('_')) throw new Error('outil inconnu');
   const code = `(async () => { const f = window.__tfMcp && window.__tfMcp[${JSON.stringify(tool)}]; if (typeof f !== 'function') throw new Error('outil indisponible (éditeur pas encore prêt)'); return JSON.parse(JSON.stringify(await f(${JSON.stringify(args || {})}) ?? null)); })()`;
-  return { result: await win.webContents.executeJavaScript(code, true) };
+  // Réponse garantie en moins d'une minute, même si l'éditeur est occupé à construire une carte.
+  const late = new Promise((_r, reject) => setTimeout(() => reject(new Error("l'éditeur est occupé et n'a pas répondu en 60 s (réessaie dans un instant)")), 60000));
+  return { result: await Promise.race([win.webContents.executeJavaScript(code, true), late]) };
 }
 
 function startControlServer() {
@@ -164,5 +166,10 @@ function connectClaude(win) {
   say('info', 'TerraForge est branché à Claude', `Ferme complètement l'appli Claude (clic droit sur son icône près de l'horloge, Quitter), puis rouvre-la.\n\nFichier modifié :\n${done.join('\n')}`);
 }
 
-app.whenReady().then(() => { setupOverpass(); createWindow(); startControlServer(); });
+// Une seule fenêtre TerraForge à la fois : un second lancement ramène la première au premier plan.
+if (!app.requestSingleInstanceLock()) app.quit();
+else {
+  app.on('second-instance', () => { if (mainWin && !mainWin.isDestroyed()) { if (mainWin.isMinimized()) mainWin.restore(); mainWin.show(); mainWin.focus(); } });
+  app.whenReady().then(() => { setupOverpass(); createWindow(); startControlServer(); });
+}
 app.on('window-all-closed', () => app.quit());

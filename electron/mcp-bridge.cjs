@@ -40,7 +40,14 @@ function post(info, body, timeout = 120000) {
 // Appelle TerraForge ; s'il n'est pas ouvert, le lance et attend qu'il soit prêt.
 async function call(tool, args) {
   let info = readInfo();
-  try { if (info) return await post(info, { tool, args }); } catch { /* pas lancé : on le démarre */ }
+  if (info) {
+    try { return await post(info, { tool, args }); }
+    catch (err) {
+      // Seul un refus de connexion veut dire « TerraForge fermé ». Tout autre échec
+      // (délai, réponse coupée) ne doit surtout pas ouvrir une deuxième fenêtre.
+      if (err.code !== 'ECONNREFUSED') throw err;
+    }
+  }
   if (!info || !info.exe) throw new Error("TerraForge n'est pas ouvert. Lance TerraForge puis réessaie.");
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;

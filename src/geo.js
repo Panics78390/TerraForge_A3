@@ -22,9 +22,9 @@ export const SAT_SOURCES = {
 };
 const inFrance = (lat, lon) => lat > 41.2 && lat < 51.3 && lon > -5.3 && lon < 9.8;
 const OVERPASS = [
-  'https://overpass.private.coffee/api/interpreter',
-  'https://overpass-api.de/api/interpreter',
   'https://overpass.openstreetmap.fr/api/interpreter',
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
   'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
 ];
@@ -393,6 +393,7 @@ async function loadSat(cfg, R, source, progress) {
 // Renvoie { elements, failed: [noms des parties manquantes] }.
 const osmCache = new Map(); // requête -> éléments
 const osmServers = OVERPASS.map((url) => ({ url, bad: 0, until: 0 }));
+let osmProbed = 0; // dernière vérification des serveurs
 const wait = (ms) => new Promise((res) => setTimeout(res, ms));
 
 export async function fetchOSM(cfg, progress = () => {}) {
@@ -479,6 +480,27 @@ export async function fetchOSM(cfg, progress = () => {}) {
     }
     return false;
   };
+  // Avant tout : une toute petite demande à chaque serveur, en parallèle, pour écarter
+  // ceux qui ne répondent pas du tout (sinon chacun ferait perdre 100 s par essai).
+  if (Date.now() - osmProbed > 5 * 60000 && tasks.some((t) => !osmCache.has(`[out:json][timeout:90];(${t.q(box(t.bbox))});out geom;`))) {
+    osmProbed = Date.now();
+    progress('OpenStreetMap : recherche des serveurs disponibles…');
+    const mid = [(s + n) / 2, (w + e) / 2];
+    const tiny = `[out:json][timeout:10];node(${mid[0].toFixed(5)},${mid[1].toFixed(5)},${(mid[0] + 0.0005).toFixed(5)},${(mid[1] + 0.0005).toFixed(5)});out ids 1;`;
+    await Promise.all(osmServers.map(async (sv) => {
+      const ctl = new AbortController();
+      const timer = setTimeout(() => ctl.abort(), 8000);
+      const t0 = Date.now();
+      try {
+        const r = await fetch(sv.url, { method: 'POST', signal: ctl.signal, body: 'data=' + encodeURIComponent(tiny), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+        if (r.status === 429 || r.status === 503 || r.status === 504) { sv.bad = 2; sv.until = Date.now() + 20000; causes.set(host(sv.url), `refus ${r.status}`); }
+        else if (!r.ok) { sv.bad = 6; sv.until = Date.now() + 10 * 60000; causes.set(host(sv.url), `refus ${r.status}`); }
+        else { await r.text(); sv.bad = Date.now() - t0 > 4000 ? 1 : 0; sv.until = 0; }
+      } catch {
+        sv.bad = 6; sv.until = Date.now() + 10 * 60000; causes.set(host(sv.url), 'pas de réponse');
+      } finally { clearTimeout(timer); }
+    }));
+  }
   // 1er passage : chaque partie entière.
   const pending = [];
   for (let t = 0; t < tasks.length; t++) {
