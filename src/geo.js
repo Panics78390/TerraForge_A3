@@ -234,6 +234,50 @@ function projector(cfg) {
   };
 }
 
+// Remplace les altitudes par celles de l'IGN (service WMS « raster », format BIL 32 bits :
+// une altitude en mètres par pixel). La projection locale étant linéaire en latitude et
+// longitude, on demande directement une image dont chaque pixel tombe sur un nœud de la grille.
+// Renvoie la part de la carte couverte (0 à 1).
+async function fetchIgnRelief(cfg, pr, heights, progress) {
+  const N = cfg.grid, cell = cfg.cell, B = 512;
+  const jobs = [];
+  for (let j0 = 0; j0 < N; j0 += B) for (let i0 = 0; i0 < N; i0 += B) jobs.push([i0, j0]);
+  const total = jobs.length;
+  let done = 0, covered = 0, errors = 0;
+  async function worker() {
+    for (;;) {
+      const job = jobs.pop();
+      if (!job) return;
+      const [i0, j0] = job;
+      const w = Math.min(B, N - i0), h = Math.min(B, N - j0);
+      // bords de l'image à une demi-cellule autour des nœuds extrêmes
+      const [north, west] = pr.toGeo((i0 - 0.5) * cell, (j0 - 0.5) * cell);
+      const [south, east] = pr.toGeo((i0 + w - 0.5) * cell, (j0 + h - 0.5) * cell);
+      const url = 'https://data.geopf.fr/wms-r?SERVICE=WMS&VERSION=1.3.0&REQUEST=GetMap&LAYERS=ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES&STYLES=&CRS=EPSG:4326' +
+        `&BBOX=${south.toFixed(7)},${west.toFixed(7)},${north.toFixed(7)},${east.toFixed(7)}&WIDTH=${w}&HEIGHT=${h}&FORMAT=image/x-bil;bits=32`;
+      let ok = false;
+      for (let attempt = 0; attempt < 3 && !ok; attempt++) {
+        try {
+          const r = await fetch(url);
+          if (!r.ok) throw new Error(r.status);
+          const buf = await r.arrayBuffer();
+          if (buf.byteLength !== w * h * 4) throw new Error('réponse inattendue');
+          const f = new Float32Array(buf);
+          for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+            const v = f[y * w + x];
+            if (v > -500 && v < 9000) { heights[(j0 + y) * N + i0 + x] = v; covered++; }
+          }
+          ok = true;
+        } catch (err) { if (attempt === 2) { errors++; console.warn('IGN', err); } }
+      }
+      progress(`Relief précis IGN : ${++done} / ${total}`);
+    }
+  }
+  await Promise.all(Array.from({ length: 4 }, worker));
+  if (errors === total) throw new Error('service IGN injoignable');
+  return covered / (N * N);
+}
+
 // ---------- Relief ----------
 export async function fetchElevation(cfg, progress = () => {}) {
   const N = cfg.grid, cell = cfg.cell, pr = projector(cfg);
@@ -292,6 +336,17 @@ export async function fetchElevation(cfg, progress = () => {}) {
   const res = (156543.03 * Math.cos((cfg.lat * Math.PI) / 180)) / 2 ** z;
   const rad = Math.min(12, Math.round(Math.max(res, 25) / cell / 2));
   if (rad >= 1) { boxBlur(heights, N, rad); boxBlur(heights, N, rad); }
+
+  // France métropolitaine : relief IGN (RGE ALTI, précision de l'ordre du mètre), bien plus
+  // fin que la source mondiale (~30 m). Il fait apparaître talus, fossés et remblais de route.
+  // Là où l'IGN n'a pas de donnée (mer, étranger), on garde la source mondiale.
+  cfg.reliefSource = 'Mapzen / AWS (~30 m)';
+  if (cfg.lat > 41 && cfg.lat < 51.6 && cfg.lon > -5.6 && cfg.lon < 10) {
+    try {
+      const got = await fetchIgnRelief(cfg, pr, heights, progress);
+      if (got > 0.5) cfg.reliefSource = 'IGN RGE ALTI (1 m)';
+    } catch (err) { console.warn('Relief IGN indisponible', err); }
+  }
 
   if (cfg.altMode === 'shift') {
     let min = Infinity;

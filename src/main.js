@@ -1626,7 +1626,7 @@ async function runGeo(cfg) {
     await tick();
     await buildGeoMap(cfg, heights, osm, sat);
   });
-  return { warning, failed, causes };
+  return { warning, failed, causes, relief: cfg.reliefSource || null };
 }
 
 // Demi-emprise au sol (x, z) d'un modèle de la bibliothèque.
@@ -2356,7 +2356,7 @@ const mcpApi = {
     const t0 = Date.now();
     mcpApi._import = { enCours: true, cfg: { lat: cfg.lat, lon: cfg.lon, taille_m: side } };
     runGeo(cfg).then(
-      (r) => { mcpApi._import = { enCours: false, duree_s: Math.round((Date.now() - t0) / 1000), manquants: r.failed, causes: r.causes, avertissement: r.warning, ...mcpApi.etat() }; },
+      (r) => { mcpApi._import = { enCours: false, duree_s: Math.round((Date.now() - t0) / 1000), manquants: r.failed, causes: r.causes, relief: r.relief, avertissement: r.warning, ...mcpApi.etat() }; },
       (err) => { mcpApi._import = { enCours: false, erreur: err.message || String(err) }; },
     );
     return { lance: true };
