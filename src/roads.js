@@ -21,6 +21,10 @@ export class RoadManager {
     this.draft = null; // route en cours de tracé
     this.draftLine = null;
     this.texFor = null; // (chemin .paa) => THREE.Texture | null, fourni par l'application
+    this.selected = null;    // route sélectionnée (mode « Modifier »)
+    this.activePoint = -1;   // point de la route sélectionnée en cours d'édition
+    this.selGroup = new THREE.Group();
+    scene.add(this.selGroup);
   }
 
   type(id) { return this.types.find((t) => t.id === id) || this.types[0]; }
@@ -69,6 +73,100 @@ export class RoadManager {
       });
       this.group.add(new THREE.Mesh(geo, mat));
     }
+    if (this.selected && !this.roads.includes(this.selected)) this.select(null);
+    else this.updateSelection();
+  }
+
+  // ---- Sélection et modification d'une route existante ----
+  // Longueur du tracé (m).
+  length(road) {
+    const pts = this.sample(road, 4);
+    let d = 0;
+    for (let k = 1; k < pts.length; k++) d += Math.hypot(pts[k].x - pts[k - 1].x, pts[k].z - pts[k - 1].z);
+    return d;
+  }
+
+  // Distance d'un point au tracé d'une route (polyligne échantillonnée).
+  distanceTo(road, x, z, step = 4) {
+    const pts = road.raw ? road.points.map(([px, pz]) => ({ x: px, z: pz })) : this.sample(road, step);
+    let best = Infinity;
+    for (let k = 1; k < pts.length; k++) {
+      const ax = pts[k - 1].x, az = pts[k - 1].z, bx = pts[k].x, bz = pts[k].z;
+      const dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz || 1;
+      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2));
+      const d = Math.hypot(x - ax - dx * t, z - az - dz * t);
+      if (d < best) best = d;
+    }
+    return best;
+  }
+
+  // Route la plus proche du point (x, z), à moins de `margin` mètres de son bord.
+  pick(x, z, margin = 4) {
+    let best = null, bd = Infinity;
+    for (const road of this.roads) {
+      if (road.points.length < 2) continue;
+      // rejet rapide par la boîte englobante
+      let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+      for (const [px, pz] of road.points) { if (px < x0) x0 = px; if (px > x1) x1 = px; if (pz < z0) z0 = pz; if (pz > z1) z1 = pz; }
+      const reach = this.type(road.type).width / 2 + margin + (road.raw ? 0 : 30);
+      if (x < x0 - reach || x > x1 + reach || z < z0 - reach || z > z1 + reach) continue;
+      const d = this.distanceTo(road, x, z) - this.type(road.type).width / 2;
+      if (d <= margin && d < bd) { bd = d; best = road; }
+    }
+    return best;
+  }
+
+  // Point de contrôle de la route le plus proche de (x, z), ou -1.
+  pickPoint(road, x, z, radius) {
+    let best = -1, bd = radius;
+    road.points.forEach(([px, pz], k) => { const d = Math.hypot(px - x, pz - z); if (d <= bd) { bd = d; best = k; } });
+    return best;
+  }
+
+  select(road, point = -1) {
+    this.selected = road || null;
+    this.activePoint = road ? point : -1;
+    this.updateSelection();
+  }
+
+  // Ajoute un point sur le tracé, à l'endroit le plus proche de (x, z). Renvoie son rang.
+  insertPoint(road, x, z) {
+    const p = road.points;
+    let best = 1, bd = Infinity, bx = x, bz = z;
+    for (let k = 1; k < p.length; k++) {
+      const ax = p[k - 1][0], az = p[k - 1][1], dx = p[k][0] - ax, dz = p[k][1] - az, l2 = dx * dx + dz * dz || 1;
+      const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / l2));
+      const qx = ax + dx * t, qz = az + dz * t, d = Math.hypot(x - qx, z - qz);
+      if (d < bd) { bd = d; best = k; bx = road.raw ? qx : x; bz = road.raw ? qz : z; }
+    }
+    p.splice(best, 0, [Math.round(bx * 100) / 100, Math.round(bz * 100) / 100]);
+    return best;
+  }
+
+  // Surbrillance de la route sélectionnée : bande jaune + poignées sur ses points.
+  updateSelection() {
+    for (const c of [...this.selGroup.children]) { this.selGroup.remove(c); c.geometry.dispose(); c.material.dispose(); }
+    const road = this.selected;
+    if (!road || road.points.length < 2) return;
+    const t = this.type(road.type);
+    const acc = { pos: [], idx: [], uv: [] };
+    this.ribbon(road, { width: t.width * 1.25 + 1 }, acc);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(acc.pos, 3));
+    geo.setIndex(acc.idx);
+    const band = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xffd400, transparent: true, opacity: 0.45, depthTest: false, side: THREE.DoubleSide }));
+    band.renderOrder = 9;
+    this.selGroup.add(band);
+    const at = ([x, z]) => new THREE.Vector3(x, this.terrain.heightAt(x, z) + 0.8, z);
+    const dots = (list, color, size) => {
+      if (!list.length) return;
+      const m = new THREE.Points(new THREE.BufferGeometry().setFromPoints(list), new THREE.PointsMaterial({ color, size, sizeAttenuation: false, depthTest: false }));
+      m.renderOrder = 11;
+      this.selGroup.add(m);
+    };
+    dots(road.points.map(at), 0xffffff, 9);
+    dots(road.points.map(at), 0x1f6feb, 6);
+    if (road.points[this.activePoint]) dots([at(road.points[this.activePoint])], 0xff3b30, 13);
   }
 
   ribbon(road, t, acc) {

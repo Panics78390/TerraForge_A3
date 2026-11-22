@@ -191,6 +191,7 @@ const toolSettings = {
     species: {},
   },
   roadType: 1,
+  roadMode: 'draw', // 'draw' : tracer une nouvelle route, 'edit' : sélectionner et modifier
 };
 
 const toolsEl = document.getElementById('tools');
@@ -241,7 +242,7 @@ function chromeToggle(side) {
 }
 
 function setTool(id) {
-  if (state.tool === 'road' && id !== 'road') roads.cancelDraft();
+  if (state.tool === 'road' && id !== 'road') { roads.cancelDraft(); roads.select(null); }
   state.tool = id;
   for (const b of toolsEl.children) b.classList.toggle('active', b.dataset.tool === id);
   controls.mouseButtons = {
@@ -250,7 +251,11 @@ function setTool(id) {
     RIGHT: null,
   };
   if (id !== 'select') objects.select(null);
-  if (id === 'road') roads.startDraft(toolSettings.roadType);
+  if (id === 'road') {
+    // S'il y a déjà des routes, on arrive en mode « Modifier » (clic = sélection).
+    toolSettings.roadMode = roads.roads.length ? 'edit' : 'draw';
+    if (toolSettings.roadMode === 'draw') roads.startDraft(toolSettings.roadType);
+  }
   renderPanel();
   renderAssets();
 }
@@ -264,6 +269,9 @@ let hover = null;          // point du terrain sous la souris
 let painting = false;
 let shiftDown = false, ctrlDown = false;
 let dragObj = null;
+let dragRoadPt = false;    // un point de la route sélectionnée est en cours de déplacement
+// Tolérance de clic sur une route ou un point : plus large quand la caméra est loin.
+const roadReach = () => Math.max(2.5, hover ? camera.position.distanceTo(new THREE.Vector3(hover.x, hover.y, hover.z)) * 0.012 : 4);
 let lastFrame = performance.now();
 let lastObjRefresh = 0;
 let dirtyProject = false;
@@ -333,7 +341,11 @@ function updateHover(e) {
 renderer.domElement.addEventListener('pointermove', (e) => {
   shiftDown = e.shiftKey; ctrlDown = e.ctrlKey || e.metaKey;
   updateHover(e);
-  if (state.tool === 'road' && hover) roads.updateDraft(hover);
+  if (state.tool === 'road' && hover && toolSettings.roadMode === 'draw') roads.updateDraft(hover);
+  if (dragRoadPt && hover && roads.selected) {
+    const p = roads.selected.points[roads.activePoint];
+    if (p) { p[0] = Math.round(hover.x * 100) / 100; p[1] = Math.round(hover.z * 100) / 100; roads.updateSelection(); }
+  }
   if (dragObj && hover) objects.move(dragObj, hover.x, hover.z);
 });
 
@@ -350,7 +362,22 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
     return;
   }
   if (state.tool === 'road') {
-    roads.addDraftPoint(hover.x, hover.z);
+    if (toolSettings.roadMode === 'draw') { roads.addDraftPoint(hover.x, hover.z); return; }
+    // Mode « Modifier » : d'abord une poignée de la route sélectionnée, sinon une route.
+    const reach = roadReach();
+    const sel = roads.selected;
+    const k = sel ? roads.pickPoint(sel, hover.x, hover.z, reach) : -1;
+    if (k >= 0) {
+      pushUndo('r');
+      roads.select(roads.selected, k); // pushUndo ne change pas les objets route en place
+      dragRoadPt = true;
+      renderer.domElement.setPointerCapture(e.pointerId);
+    } else {
+      const r = roads.pick(hover.x, hover.z, reach);
+      roads.select(r);
+      if (r) toolSettings.roadType = r.type;
+    }
+    renderPanel();
     return;
   }
   if (state.tool === 'place') {
@@ -383,11 +410,42 @@ window.addEventListener('pointerup', () => {
     updateInfo();
   }
   dragObj = null;
+  if (dragRoadPt) { dragRoadPt = false; roads.rebuild(); renderPanel(); }
 });
 
 renderer.domElement.addEventListener('dblclick', () => {
-  if (state.tool === 'road') finishRoad();
+  if (state.tool !== 'road') return;
+  if (toolSettings.roadMode === 'draw') return finishRoad();
+  // Mode « Modifier » : double-clic sur la route sélectionnée = nouveau point à cet endroit.
+  const sel = roads.selected;
+  if (!sel || !hover) return;
+  if (roads.pickPoint(sel, hover.x, hover.z, roadReach()) >= 0) return;
+  if (roads.distanceTo(sel, hover.x, hover.z) > roads.type(sel.type).width / 2 + roadReach()) return;
+  pushUndo('r');
+  roads.select(sel, roads.insertPoint(sel, hover.x, hover.z));
+  roads.rebuild();
+  renderPanel();
 });
+
+function deleteRoadPoint() {
+  const sel = roads.selected;
+  if (!sel || !sel.points[roads.activePoint]) return;
+  if (sel.points.length <= 2) return toast('Une route a besoin d\'au moins 2 points');
+  pushUndo('r');
+  sel.points.splice(roads.activePoint, 1);
+  roads.select(sel);
+  roads.rebuild();
+  renderPanel();
+}
+function deleteRoad() {
+  const sel = roads.selected;
+  if (!sel) return;
+  pushUndo('r');
+  roads.roads.splice(roads.roads.indexOf(sel), 1);
+  roads.select(null);
+  roads.rebuild();
+  renderPanel(); updateInfo();
+}
 
 function finishRoad() {
   const d = roads.draft;
@@ -414,7 +472,10 @@ window.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && k === 's') { e.preventDefault(); doSave(e.shiftKey); return; }
   if (k === '[') { state.settings.radius = Math.max(2, Math.round(state.settings.radius / 1.15)); renderPanel(); }
   if (k === ']') { state.settings.radius = Math.min(2000, Math.round(state.settings.radius * 1.15 + 1)); renderPanel(); }
-  if (state.tool === 'road') {
+  if (state.tool === 'road' && toolSettings.roadMode === 'edit') {
+    if (k === 'escape') { roads.select(null); renderPanel(); }
+    if (k === 'delete' || k === 'backspace') { if (roads.activePoint >= 0) deleteRoadPoint(); else deleteRoad(); }
+  } else if (state.tool === 'road') {
     if (k === 'enter') finishRoad();
     if (k === 'escape') { roads.cancelDraft(); roads.startDraft(toolSettings.roadType); }
     if (k === 'backspace') roads.undoDraftPoint();
@@ -858,25 +919,66 @@ function renderPanel() {
       break;
     }
     case 'road': {
-      panelBody.append(note('Clique pour ajouter des points. <b>Double-clic</b> ou <b>Entrée</b> pour terminer la route. <b>Retour arrière</b> : retirer le dernier point. <b>Échap</b> : annuler.'));
-      const sel = document.createElement('div');
-      sel.className = 'row';
-      sel.innerHTML = `<label>Type</label><select>${roads.types.map((t) => `<option value="${t.id}" ${t.id === toolSettings.roadType ? 'selected' : ''}>${esc(t.name)} (${t.width} m)</option>`).join('')}</select>`;
-      sel.querySelector('select').onchange = (e) => {
-        toolSettings.roadType = +e.target.value;
-        if (roads.draft) roads.draft.type = toolSettings.roadType;
+      const edit = toolSettings.roadMode === 'edit';
+      const modes = document.createElement('div');
+      modes.className = 'row';
+      const setMode = (m) => {
+        toolSettings.roadMode = m;
+        if (m === 'draw') { roads.select(null); roads.startDraft(toolSettings.roadType); } else roads.cancelDraft();
+        renderPanel();
       };
-      panelBody.append(sel);
-      roadTypeEditor();
-      panelBody.append(btn('Terminer la route', finishRoad));
+      modes.append(btn('Modifier une route', () => setMode('edit'), edit ? 'primary' : ''), btn('Tracer une route', () => setMode('draw'), edit ? '' : 'primary'));
+      panelBody.append(modes);
+      const typeSelect = (current, onChange) => {
+        const sel = document.createElement('div');
+        sel.className = 'row';
+        sel.innerHTML = `<label>Type</label><select>${roads.types.map((t) => `<option value="${t.id}" ${t.id === current ? 'selected' : ''}>${esc(t.name)} (${t.width} m)</option>`).join('')}</select>`;
+        sel.querySelector('select').onchange = (e) => onChange(+e.target.value);
+        return sel;
+      };
+      if (edit) {
+        const r = roads.selected;
+        if (!r) {
+          panelBody.append(note('<b>Clique sur une route</b> pour la sélectionner : elle passe en surbrillance et ses réglages s\'affichent ici.'));
+        } else {
+          const t = roads.type(r.type);
+          panelBody.append(h3(`Route ${roads.roads.indexOf(r) + 1} sur ${roads.roads.length}`));
+          panelBody.append(note(`${Math.round(roads.length(r)).toLocaleString('fr-FR')} m · ${r.points.length} points · largeur ${t.width} m<br>Texture appliquée : ${t.tex ? `<code>${esc(t.tex.split('\\').slice(-1)[0])}</code>` : 'couleur unie (aucune texture)'}`));
+          panelBody.append(typeSelect(r.type, (id) => { pushUndo('r'); r.type = id; toolSettings.roadType = id; roads.rebuild(); renderPanel(); }));
+          panelBody.append(note('<b>Glisse un point</b> pour déplacer le tracé. <b>Double-clic</b> sur la route : ajouter un point. <b>Suppr</b> : retirer le point rouge (ou la route si aucun point n\'est choisi). <b>Échap</b> : désélectionner.'));
+          const acts = document.createElement('div');
+          acts.className = 'row';
+          acts.append(btn('Retirer le point', deleteRoadPoint, 'small'), btn('Supprimer la route', deleteRoad, 'small danger'));
+          panelBody.append(acts);
+          if (r.raw) panelBody.append(btn('Adoucir le tracé (courbes)', () => { pushUndo('r'); delete r.raw; roads.rebuild(); renderPanel(); }, 'small'));
+          else panelBody.append(btn('Tracé en segments droits', () => { pushUndo('r'); r.raw = true; roads.rebuild(); renderPanel(); }, 'small'));
+          roadTypeEditor(r);
+        }
+      } else {
+        panelBody.append(note('Clique pour ajouter des points. <b>Double-clic</b> ou <b>Entrée</b> pour terminer la route. <b>Retour arrière</b> : retirer le dernier point. <b>Échap</b> : annuler.'));
+        panelBody.append(typeSelect(toolSettings.roadType, (id) => {
+          toolSettings.roadType = id;
+          if (roads.draft) roads.draft.type = id;
+          renderPanel();
+        }));
+        roadTypeEditor();
+        panelBody.append(btn('Terminer la route', finishRoad));
+      }
       panelBody.append(h3(`Routes (${roads.roads.length})`));
       const list = document.createElement('div');
       list.className = 'list';
       roads.roads.slice(0, 150).forEach((r, i) => {
         const t2 = roads.type(r.type);
         const it = document.createElement('div');
-        it.className = 'item';
+        it.className = 'item' + (r === roads.selected ? ' active' : '');
         it.innerHTML = `<span class="sw" style="background:${t2.color}"></span><div class="grow">Route ${i + 1}<div class="sub">${esc(t2.name)} · ${r.points.length} points</div></div>`;
+        it.querySelector('.grow').onclick = () => {
+          toolSettings.roadMode = 'edit'; roads.cancelDraft();
+          roads.select(r); toolSettings.roadType = r.type;
+          const [x, z] = r.points[Math.floor(r.points.length / 2)];
+          mcpApi.camera({ x, z });
+          renderPanel();
+        };
         it.append(btn(icon('close', 12), () => { pushUndo('r'); roads.roads.splice(i, 1); roads.rebuild(); renderPanel(); updateInfo(); }, 'small danger'));
         list.append(it);
       });
@@ -898,10 +1000,11 @@ function renderPanel() {
 // Réglages du type de route choisi : nom, largeur, texture (du jeu ou d'un mod chargé).
 const ROAD_TEX = /road|path|highway|runway|track|street|asphalt|asf|pavement|silnice|cesta/;
 const ROAD_TEX_NOT = /_end_|decal|light|sign|\\ui\\|damage|wreck/;
-function roadTypeEditor() {
-  const t = roads.type(toolSettings.roadType);
+function roadTypeEditor(road = null) {
+  const t = roads.type(road ? road.type : toolSettings.roadType);
   if (!t) return;
   panelBody.append(h3('Type de route'));
+  if (road) panelBody.append(note(`Ces réglages valent pour <b>toutes les routes de ce type</b> (${roads.roads.filter((r) => r.type === t.id).length}). Pour changer seulement cette route, crée un nouveau type ci-dessous.`));
   const nm = document.createElement('div'); nm.className = 'row';
   nm.innerHTML = `<label>Nom</label><input type="text" value="${esc(t.name)}">`;
   nm.querySelector('input').onchange = (e) => { t.name = e.target.value || t.name; dirtyProject = true; renderPanel(); };
@@ -919,10 +1022,11 @@ function roadTypeEditor() {
   if (t.tex) panelBody.append(note(`<code>${esc(t.tex)}</code><br>Cette texture est écrite dans RoadsLib.cfg à l'export.`));
   else if (!a3.count) panelBody.append(note('Pour choisir une vraie texture de route, charge d\'abord tes fichiers avec <b>Modèles Arma 3</b> (par ex. <code>roads_f.pbo</code> ou les .pbo d\'un mod).'));
   else if (!list.length) panelBody.append(note('Aucune texture de route trouvée dans les fichiers chargés. Ajoute <code>roads_f.pbo</code> ou les .pbo de ton mod.'));
-  panelBody.append(btn('+ Nouveau type de route', () => {
+  panelBody.append(btn(road ? '+ Nouveau type pour cette route' : '+ Nouveau type de route', () => {
     const id = Math.max(0, ...roads.types.map((x) => x.id)) + 1;
     roads.types.push({ ...t, id, name: t.name + ' (copie)' });
     toolSettings.roadType = id;
+    if (road) { pushUndo('r'); road.type = id; roads.rebuild(); }
     if (roads.draft) roads.draft.type = id;
     dirtyProject = true;
     renderPanel();
