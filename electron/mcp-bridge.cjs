@@ -88,7 +88,11 @@ process.stdin.on('data', (chunk) => {
     if (!line) continue;
     let msg;
     try { msg = JSON.parse(line); } catch { continue; }
-    handle(msg).catch((err) => { if (msg.id !== undefined) send({ jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: String(err.message || err) } }); });
+    pending++;
+    handle(msg).catch((err) => { if (msg.id !== undefined) send({ jsonrpc: '2.0', id: msg.id, error: { code: -32603, message: String(err.message || err) } }); })
+      .finally(() => { pending--; if (ended && !pending) process.exit(0); });
   }
 });
-process.stdin.on('end', () => process.exit(0));
+// À la fermeture de l'entrée, on laisse finir les appels en cours avant de quitter.
+let pending = 0, ended = false;
+process.stdin.on('end', () => { ended = true; if (!pending) process.exit(0); });

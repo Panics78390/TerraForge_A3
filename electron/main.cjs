@@ -137,6 +137,11 @@ function connectClaude(win) {
     const pk = path.join(process.env.LOCALAPPDATA || '', 'Packages');
     for (const d of fs.readdirSync(pk)) if (/^(AnthropicPBC\.)?Claude/i.test(d)) dirs.push(path.join(pk, d, 'LocalCache', 'Roaming', 'Claude'));
   } catch { /* pas d'installation par le Microsoft Store */ }
+  // Versions récentes de l'appli Claude : données dans %LOCALAPPDATA%\\Claude-Data\\claude_xxx.
+  try {
+    const cd = path.join(process.env.LOCALAPPDATA || '', 'Claude-Data');
+    for (const d of fs.readdirSync(cd)) dirs.push(path.join(cd, d));
+  } catch { /* ancienne version de l'appli Claude */ }
   const entry = { command: process.execPath, args: [bridgeFile(), infoFile()], env: { ELECTRON_RUN_AS_NODE: '1' } };
   const done = [];
   for (const dir of dirs) {
