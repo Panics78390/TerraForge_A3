@@ -2432,7 +2432,7 @@ const mcpApi = {
       lat: +a.lat, lon: +a.lon, grid, cell, maskRes: 2048,
       relief: on(a.relief), altMode: 'real',
       satellite: on(a.satellite), satSource: 'auto', satRes: 4096,
-      roads: on(a.routes), paths: on(a.chemins, false), landuse: on(a.sols), trees: on(a.arbres), treeDensity: +a.densite_arbres || 40, buildings: on(a.batiments),
+      roads: on(a.routes), paths: on(a.chemins, false), landuse: on(a.sols), trees: on(a.arbres), treeDensity: +a.densite_arbres || 40, buildings: on(a.batiments), bridges: on(a.ponts, false),
     };
     if (!isFinite(cfg.lat) || !isFinite(cfg.lon)) return { erreur: 'lat et lon sont obligatoires.' };
     const t0 = Date.now();
