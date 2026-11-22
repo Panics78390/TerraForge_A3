@@ -45,5 +45,28 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(createWindow);
+// Serveurs OpenStreetMap (Overpass) : certains refusent les demandes venant d'une appli
+// de bureau (origine « file:// », refus 403 ou 406). On les envoie donc comme un client
+// normal, identifié par le nom de l'application, sans en-tête d'origine, et on autorise
+// la page à lire la réponse.
+function setupOverpass() {
+  const { session } = require('electron');
+  const filter = { urls: ['https://*/api/interpreter*', 'https://*/osm/tools/overpass/*'] };
+  const ua = `TerraForge/${app.getVersion()} (desktop map editor)`;
+  session.defaultSession.webRequest.onBeforeSendHeaders(filter, (details, cb) => {
+    const h = details.requestHeaders;
+    for (const k of Object.keys(h)) if (/^(origin|referer|sec-fetch-.*|sec-ch-.*)$/i.test(k)) delete h[k];
+    h['User-Agent'] = ua;
+    h['Accept'] = 'application/json, */*';
+    cb({ requestHeaders: h });
+  });
+  session.defaultSession.webRequest.onHeadersReceived(filter, (details, cb) => {
+    const h = details.responseHeaders || {};
+    for (const k of Object.keys(h)) if (/^access-control-allow-origin$/i.test(k)) delete h[k];
+    h['Access-Control-Allow-Origin'] = ['*'];
+    cb({ responseHeaders: h });
+  });
+}
+
+app.whenReady().then(() => { setupOverpass(); createWindow(); });
 app.on('window-all-closed', () => app.quit());
