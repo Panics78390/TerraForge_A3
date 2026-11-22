@@ -1,6 +1,6 @@
 {
   "name": "terraforge-a3",
-  "version": "1.2.4",
+  "version": "1.2.5",
   "private": true,
   "type": "module",
   "description": "Éditeur de terrain simplifié pour Arma 3 (aperçu 3D en direct, exports Terrain Builder)",

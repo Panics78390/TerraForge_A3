@@ -1499,7 +1499,7 @@ async function doGeo() {
       if (cfg.roads || cfg.paths || cfg.landuse || cfg.trees || cfg.buildings) {
         const raw = await fetchOSM(cfg, setBusy);
         osm = parseOSM(raw, cfg);
-        if (raw.failed.length) warning += `Les serveurs OpenStreetMap étaient saturés pour : ${raw.failed.join(', ')}. Le reste a été importé. Relance « Monde réel » dans quelques minutes pour avoir tout.`;
+        if (raw.failed.length) warning += `Les serveurs OpenStreetMap étaient saturés pour : ${raw.failed.join(', ')}. Le reste a été importé. Relance « Monde réel » sur la même zone, sans fermer TerraForge : seules les parties manquantes seront redemandées.${raw.causes.length ? ` (Détail : ${raw.causes.join(' ; ')})` : ''}`;
       }
       let sat = null;
       if (cfg.satellite) {

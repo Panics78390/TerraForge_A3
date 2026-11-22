@@ -22,8 +22,9 @@ export const SAT_SOURCES = {
 };
 const inFrance = (lat, lon) => lat > 41.2 && lat < 51.3 && lon > -5.3 && lon < 9.8;
 const OVERPASS = [
-  'https://overpass-api.de/api/interpreter',
   'https://overpass.private.coffee/api/interpreter',
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.openstreetmap.fr/api/interpreter',
   'https://overpass.kumi.systems/api/interpreter',
   'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
 ];
@@ -391,6 +392,7 @@ async function loadSat(cfg, R, source, progress) {
 // « Monde réel » sur la même zone ne redemande que ce qui manquait.
 // Renvoie { elements, failed: [noms des parties manquantes] }.
 const osmCache = new Map(); // requête -> éléments
+const osmServers = OVERPASS.map((url) => ({ url, bad: 0, until: 0 }));
 const wait = (ms) => new Promise((res) => setTimeout(res, ms));
 
 export async function fetchOSM(cfg, progress = () => {}) {
@@ -420,12 +422,28 @@ export async function fetchOSM(cfg, progress = () => {}) {
   }
   const seen = new Set(), elements = [];
   const keep = (list) => { for (const el of list) { const key = el.type[0] + el.id; if (!seen.has(key)) { seen.add(key); elements.push(el); } } };
-  let server = 0;
-  // Un morceau : jusqu'à `tries` essais en changeant de serveur, avec une pause qui s'allonge.
+  // État de chaque serveur : un serveur qui refuse (429, 504) est mis au repos un moment,
+  // un serveur injoignable ou muet est mis de côté plus longtemps. On choisit toujours
+  // le serveur disponible qui a le moins échoué, et on attend s'ils sont tous au repos.
+  const causes = new Map(); // serveur -> dernière cause d'échec
+  const host = (url) => url.split('/')[2];
+  const pickServer = async (label) => {
+    for (;;) {
+      const now = Date.now();
+      const ready = osmServers.filter((sv) => sv.until <= now).sort((a, b) => a.bad - b.bad);
+      if (ready.length) return ready[0];
+      const next = Math.min(...osmServers.map((sv) => sv.until));
+      const sec = Math.min(30, Math.max(1, Math.ceil((next - now) / 1000)));
+      progress(`${label} : serveurs occupés, nouvel essai dans ${sec} s…`);
+      await wait(sec * 1000);
+    }
+  };
+  // Un morceau : jusqu'à `tries` essais.
   const run = async (q, bbox, label, tries) => {
     const query = `[out:json][timeout:90];(${q(box(bbox))});out geom;`;
     if (osmCache.has(query)) { keep(osmCache.get(query)); return true; }
     for (let attempt = 0; attempt < tries; attempt++) {
+      const sv = await pickServer(label);
       const ctl = new AbortController();
       const t0 = Date.now();
       const text = `${label}${attempt ? ` (essai ${attempt + 1})` : ''}`;
@@ -435,26 +453,28 @@ export async function fetchOSM(cfg, progress = () => {}) {
         progress(`${text}… ${sec} s`);
         if (sec >= 100) ctl.abort();
       }, 1000);
-      const url = OVERPASS[server % OVERPASS.length];
       try {
-        const r = await fetch(url, { method: 'POST', signal: ctl.signal, body: 'data=' + encodeURIComponent(query), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
-        if (!r.ok) throw new Error(r.status);
+        const r = await fetch(sv.url, { method: 'POST', signal: ctl.signal, body: 'data=' + encodeURIComponent(query), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+        if (!r.ok) {
+          const err = new Error(`refus ${r.status}`);
+          err.busy = r.status === 429 || r.status === 503 || r.status === 504;
+          err.retry = +r.headers.get('Retry-After') || 0;
+          throw err;
+        }
         const json = await r.json();
         // Une « remark » signale une réponse coupée (délai ou mémoire dépassés) : on ne s'y fie pas.
-        if (json.remark) throw new Error(json.remark);
+        if (json.remark) { const err = new Error('réponse incomplète'); err.busy = true; throw err; }
         const list = json.elements || [];
         osmCache.set(query, list);
         keep(list);
+        sv.bad = Math.max(0, sv.bad - 1);
         return true;
       } catch (err) {
-        console.warn('Overpass', url, err);
-        server++; // serveur suivant
-        clearInterval(timer);
-        if (attempt < tries - 1) {
-          const pause = Math.min(12, 2 + attempt * 3);
-          progress(`${label} : serveur occupé, nouvel essai dans ${pause} s…`);
-          await wait(pause * 1000);
-        }
+        console.warn('Overpass', sv.url, err);
+        const why = err.name === 'AbortError' ? 'pas de réponse en 100 s' : err.busy || /^refus/.test(err.message) ? err.message : 'injoignable';
+        causes.set(host(sv.url), why);
+        sv.bad += err.busy ? 1 : 3;
+        sv.until = Date.now() + (err.busy ? Math.min(60, Math.max(15, err.retry)) : 90) * 1000;
       } finally { clearInterval(timer); }
     }
     return false;
@@ -479,10 +499,9 @@ export async function fetchOSM(cfg, progress = () => {}) {
   const failed = [];
   const deadline = Date.now() + 8 * 60000;
   for (const task of pending) {
-    await wait(5000); // laisse souffler les serveurs avant d'insister
     if (!(await rescue(task, task.bbox, `OpenStreetMap, rattrapage : ${task.name}, morceau`, 0))) failed.push(task.name);
   }
-  return { elements, failed };
+  return { elements, failed, causes: [...causes].map(([h, why]) => `${h} : ${why}`) };
 }
 
 const ROAD_TYPES = {
