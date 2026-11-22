@@ -1491,31 +1491,38 @@ async function doGeo() {
   const cfg = await openGeoDialog();
   if (!cfg) return;
   if (dirtyProject && !confirmBox('Les modifications non enregistrées seront perdues. Continuer ?')) return;
-  let warning = '';
-  try {
-    await busy('Import du monde réel…', async () => {
-      const heights = cfg.relief ? await fetchElevation(cfg, setBusy) : null;
-      let osm = { roads: [], buildings: [], areas: [] };
-      if (cfg.roads || cfg.paths || cfg.landuse || cfg.trees || cfg.buildings) {
-        const raw = await fetchOSM(cfg, setBusy);
-        osm = parseOSM(raw, cfg);
-        if (raw.failed.length) warning += `Les serveurs OpenStreetMap étaient saturés pour : ${raw.failed.join(', ')}. Le reste a été importé. Relance « Monde réel » sur la même zone, sans fermer TerraForge : seules les parties manquantes seront redemandées.${raw.causes.length ? ` (Détail : ${raw.causes.join(' ; ')})` : ''}`;
-      }
-      let sat = null;
-      if (cfg.satellite) {
-        try { sat = await fetchSatellite(cfg, setBusy); }
-        catch (err) { console.error(err); warning += ' L\'image satellite n\'a pas pu être téléchargée.'; }
-      }
-      setBusy('Construction de la carte…');
-      await tick();
-      await buildGeoMap(cfg, heights, osm, sat);
-    });
-  } catch (err) {
+  let res;
+  try { res = await runGeo(cfg); }
+  catch (err) {
     console.error(err);
     return alertDialog('Import impossible', esc(err.message || String(err)));
   }
-  if (warning) alertDialog('Import partiel', esc(warning));
+  if (res.warning) alertDialog('Import partiel', esc(res.warning));
   else toast(`Carte créée : ${roads.roads.length} routes, ${objects.objects.length.toLocaleString('fr-FR')} objets`, 4000);
+}
+
+// Fait l'import complet pour une configuration donnée (sans fenêtre de dialogue).
+async function runGeo(cfg) {
+  let warning = '', failed = [], causes = [];
+  await busy('Import du monde réel…', async () => {
+    const heights = cfg.relief ? await fetchElevation(cfg, setBusy) : null;
+    let osm = { roads: [], buildings: [], areas: [] };
+    if (cfg.roads || cfg.paths || cfg.landuse || cfg.trees || cfg.buildings) {
+      const raw = await fetchOSM(cfg, setBusy);
+      osm = parseOSM(raw, cfg);
+      failed = raw.failed; causes = raw.causes;
+      if (raw.failed.length) warning += `Les serveurs OpenStreetMap étaient saturés pour : ${raw.failed.join(', ')}. Le reste a été importé. Relance « Monde réel » sur la même zone, sans fermer TerraForge : seules les parties manquantes seront redemandées.${raw.causes.length ? ` (Détail : ${raw.causes.join(' ; ')})` : ''}`;
+    }
+    let sat = null;
+    if (cfg.satellite) {
+      try { sat = await fetchSatellite(cfg, setBusy); }
+      catch (err) { console.error(err); warning += ' L\'image satellite n\'a pas pu être téléchargée.'; }
+    }
+    setBusy('Construction de la carte…');
+    await tick();
+    await buildGeoMap(cfg, heights, osm, sat);
+  });
+  return { warning, failed, causes };
 }
 
 // Demi-emprise au sol (x, z) d'un modèle de la bibliothèque.
@@ -2205,6 +2212,72 @@ async function doExport() {
   }
 }
 
+const IS_APP = /Electron/.test(navigator.userAgent);
+
+// ---------- Pilotage à distance (serveur MCP de l'appli Windows) ----------
+// Chaque fonction reçoit un objet d'arguments et renvoie un objet simple (JSON).
+const mcpApi = {
+  etat() {
+    const counts = {};
+    for (const o of objects.objects) counts[o.lib] = (counts[o.lib] || 0) + 1;
+    const lib = Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([id, n]) => {
+      const e = objects.entry(id) || {};
+      return { id, nom: e.name, modele: e.tbName, vraiModele: !!e.p3d && !e._missing, nombre: n };
+    });
+    return {
+      version: APP_VERSION, jeu: state.settings.game, nom: state.settings.name,
+      taille_m: terrain.size, grille: terrain.N, cellule_m: terrain.cell,
+      geo: state.settings.geo || null,
+      routes: roads.roads.length, objets: objects.objects.length, parModele: lib,
+      modelesArma3: a3.count, occupe: busyEl.classList.contains('show'), message: busyEl.querySelector('p')?.textContent || '',
+      dialogueOuvert: dlg.open ? (dlgForm.querySelector('h2')?.textContent || true) : false,
+    };
+  },
+  // Lance « Monde réel » sans fenêtre. Renvoie tout de suite ; suivre avec etat() puis dernier_import().
+  monde_reel(a = {}) {
+    if (busyEl.classList.contains('show')) return { erreur: 'TerraForge est déjà occupé.' };
+    document.getElementById('wizard')?.remove();
+    if (dlg.open) dlg.close();
+    const side = Math.max(1024, Math.min(16384, +a.taille_m || 4096));
+    const grid = side >= 8192 ? 2048 : 1024, cell = side / grid;
+    const on = (v, d = true) => (v === undefined ? d : !!v);
+    const cfg = {
+      name: String(a.nom || 'MonTerrainReel').replace(/\W/g, '') || 'MonTerrainReel', author: '',
+      lat: +a.lat, lon: +a.lon, grid, cell, maskRes: 2048,
+      relief: on(a.relief), altMode: 'real',
+      satellite: on(a.satellite), satSource: 'auto', satRes: 4096,
+      roads: on(a.routes), paths: on(a.chemins, false), landuse: on(a.sols), trees: on(a.arbres), treeDensity: +a.densite_arbres || 40, buildings: on(a.batiments),
+    };
+    if (!isFinite(cfg.lat) || !isFinite(cfg.lon)) return { erreur: 'lat et lon sont obligatoires.' };
+    const t0 = Date.now();
+    mcpApi._import = { enCours: true, cfg: { lat: cfg.lat, lon: cfg.lon, taille_m: side } };
+    runGeo(cfg).then(
+      (r) => { mcpApi._import = { enCours: false, duree_s: Math.round((Date.now() - t0) / 1000), manquants: r.failed, causes: r.causes, avertissement: r.warning, ...mcpApi.etat() }; },
+      (err) => { mcpApi._import = { enCours: false, erreur: err.message || String(err) }; },
+    );
+    return { lance: true };
+  },
+  dernier_import() { return mcpApi._import || { enCours: false, aucun: true }; },
+  fermer_dialogue() { const t = dlg.open ? dlgForm.querySelector('h2')?.textContent : null; if (dlg.open) dlg.close(); document.getElementById('wizard')?.remove(); return { ferme: t }; },
+  camera(a = {}) {
+    if (isFinite(+a.x) && isFinite(+a.z)) {
+      const y = isFinite(+a.hauteur) ? +a.hauteur : terrain.heightAt(+a.x, +a.z) + 150;
+      const d = isFinite(+a.distance) ? +a.distance : 250;
+      camera.position.set(+a.x - d * 0.6, y, +a.z + d * 0.8);
+      controls.target.set(+a.x, terrain.heightAt(+a.x, +a.z), +a.z);
+      camera.lookAt(controls.target);
+      controls.update?.();
+    }
+    return { position: camera.position.toArray().map((v) => Math.round(v)), cible: controls.target.toArray().map((v) => Math.round(v)) };
+  },
+  // Exécute du JavaScript dans l'éditeur (diagnostic). `code` est le corps d'une fonction asynchrone.
+  async js(a = {}) {
+    const fn = new (Object.getPrototypeOf(async function () {}).constructor)('tf', String(a.code || ''));
+    const out = await fn({ state, terrain, objects, roads, a3, camera, controls, api: mcpApi, geo: window.__tfGeo });
+    return { resultat: out === undefined ? null : out };
+  },
+};
+
 function doHelp() {
   alertDialog('Aide TerraForge', `
   <img class="help-logo" src="${logoUrl}" alt="TerraForge">
@@ -2218,7 +2291,10 @@ function doHelp() {
     <li><b>Nouveau terrain</b> ouvre l'assistant : taille, style de relief, mer, rivières, volcan, canyon, surfaces.</li>
     <li><b>Exporter</b> produit un .zip contenant le dossier du mod, à décompresser sur P: ; le fichier LISEZMOI.txt explique chaque étape.</li>
   </ul>
-  <p class="note">La compilation finale du terrain (WRP + PBO) se fait toujours avec les outils Arma 3 (Terrain Builder, Addon Builder ou pboProject).</p>`);
+  <p class="note">La compilation finale du terrain (WRP + PBO) se fait toujours avec les outils Arma 3 (Terrain Builder, Addon Builder ou pboProject).</p>
+  ${IS_APP ? '<p><button type="button" id="btn-claude">Connecter TerraForge à Claude</button> <span class="note">Permet à Claude (appli de bureau) de piloter TerraForge.</span></p>' : ''}`);
+  const bc = document.getElementById('btn-claude');
+  if (bc) bc.onclick = () => window.open('terraforge-cmd:connect-claude');
 }
 
 document.getElementById('topbar').addEventListener('click', (e) => {
@@ -2321,6 +2397,7 @@ function esc(s) {
   window.__tfCreate = createMap;
   window.__tfGeo = { buildGeoMap, fetchElevation, fetchOSM, parseOSM, placeBuildings };
   window.__tfDefaults = defaultParams;
+  window.__tfMcp = mcpApi;
   window.__tfA3 = { a3, connectA3, useA3Model, camera, controls, parseObjectLines };
   if (!new URLSearchParams(location.search).has('nowizard')) chooseGame(true).then(() => doNew(true));
 })();
