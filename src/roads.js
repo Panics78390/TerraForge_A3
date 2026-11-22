@@ -405,6 +405,7 @@ export class RoadManager {
     for (const { road, seq } of ways) {
       const core = this.type(road.type).width / 2 + c * 0.75, R = core + shoulder;
       const prio = [1, 3, 10, 30, 100][rank(road)];
+      const hw = this.type(road.type).width / 2;
       const mine = ends.filter((e) => key(e) === key(road.points[0]) || key(e) === key(road.points[road.points.length - 1]));
       for (let k = 0; k < seq.length; k++) {
         const a = seq[Math.max(0, k - 1)], b = seq[k];
@@ -421,8 +422,10 @@ export class RoadManager {
             if (d >= R) continue;
             let w = d <= core ? 1 : 1 - (d - core) / shoulder;
             w = w * w * (3 - 2 * w);
-            const q = j * N + i, ww = w * w * w * w * prio;
-            if (!own && reserved.has(q)) continue;
+            const q = j * N + i;
+            let ww = w * w * w * w * prio;
+            // bout de pont : la route du dessous n'y garde que sa propre chaussée, où elle prime
+            if (!own && reserved.has(q)) { if (d > hw) continue; ww *= 1000; }
             sum[q] += target * ww; wsum[q] += ww;
             if (w > wmax[q]) wmax[q] = w;
           }
