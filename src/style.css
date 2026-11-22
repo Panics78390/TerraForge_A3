@@ -157,6 +157,7 @@ body.panel-collapsed #panel .chrome-collapse { position: static; width: 100%; }
 .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
 .row label { flex: 0 0 110px; color: var(--muted); }
 .row input[type=range] { flex: 1; }
+.row input.num[type=number] { width: 62px; flex: none; text-align: right; font-variant-numeric: tabular-nums; padding: 2px 4px; }
 .row output { width: 52px; text-align: right; font-variant-numeric: tabular-nums; color: var(--text); }
 input[type=range] { accent-color: var(--accent); }
 input[type=text], input[type=number], select, textarea {

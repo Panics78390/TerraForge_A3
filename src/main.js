@@ -177,6 +177,7 @@ const TOOLS = [
 
 const toolSettings = {
   flattenLevel: 20,
+  flattenFixed: false, // false : le niveau est pris sous le curseur à chaque clic
   waterDepth: 4,
   surface: 0,
   paintHardness: 0.8,
@@ -356,10 +357,17 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
   const tool = TOOLS.find((t) => t.id === state.tool);
 
   if (state.tool === 'flatten' && (e.ctrlKey || e.metaKey)) {
-    toolSettings.flattenLevel = Math.round(hover.y * 10) / 10;
+    // Ctrl+clic : relève l'altitude et la garde comme niveau fixe.
+    toolSettings.flattenLevel = Math.round(hover.y * 100) / 100;
+    toolSettings.flattenFixed = true;
     renderPanel();
-    toast(`Niveau d'aplanissement : ${toolSettings.flattenLevel} m`);
+    toast(`Niveau fixe : ${toolSettings.flattenLevel} m`);
     return;
+  }
+  if (state.tool === 'flatten' && !toolSettings.flattenFixed) {
+    // Par défaut on aplanit à l'altitude du terrain à l'endroit où l'on clique.
+    toolSettings.flattenLevel = Math.round(hover.y * 100) / 100;
+    renderPanel();
   }
   if (state.tool === 'road') {
     if (toolSettings.roadMode === 'draw') { roads.addDraftPoint(hover.x, hover.z); return; }
@@ -763,9 +771,19 @@ function slider(label, get, set, min, max, step, unit = '') {
   const row = document.createElement('div');
   row.className = 'row';
   const v = get();
-  row.innerHTML = `<label>${label}</label><input type="range" min="${min}" max="${max}" step="${step}" value="${v}"><output>${v}${unit}</output>`;
-  const inp = row.querySelector('input'), out = row.querySelector('output');
-  inp.oninput = () => { set(parseFloat(inp.value)); out.textContent = inp.value + unit; };
+  // Curseur + case où l'on peut taper la valeur au clavier (Entrée ou Tab pour valider).
+  row.innerHTML = `<label>${label}</label><input type="range" min="${min}" max="${max}" step="${step}" value="${v}"><input class="num" type="number" min="${min}" max="${max}" step="${step}" value="${v}" title="Tape une valeur${unit ? ' (' + unit.trim() + ')' : ''}">`;
+  const inp = row.querySelector('input[type=range]'), num = row.querySelector('input.num');
+  inp.oninput = () => { set(parseFloat(inp.value)); num.value = inp.value; };
+  num.onchange = () => {
+    let x = parseFloat(String(num.value).replace(',', '.'));
+    if (!isFinite(x)) { num.value = inp.value; return; }
+    x = Math.max(min, Math.min(max, x));
+    num.value = x; inp.value = x;
+    set(x);
+  };
+  // les raccourcis clavier de l'éditeur ne doivent pas réagir pendant la saisie
+  num.onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') num.blur(); };
   return row;
 }
 function numberRow(label, get, set, step = 1) {
@@ -845,8 +863,9 @@ function renderPanel() {
       brushControls();
       break;
     case 'flatten':
-      panelBody.append(note('Amène le terrain au niveau choisi. <b>Ctrl+clic</b> sur le terrain pour prendre son altitude.'));
-      panelBody.append(numberRow('Niveau (m)', () => toolSettings.flattenLevel, (v) => (toolSettings.flattenLevel = v), 0.5));
+      panelBody.append(note('Clique sur le terrain et fais glisser : le sol est mis à plat <b>à l\'altitude de l\'endroit où tu as cliqué</b>. Pour viser une altitude précise, tape-la ci-dessous (ou <b>Ctrl+clic</b> pour la relever sur le terrain).'));
+      panelBody.append(checkRow('Niveau fixe', () => toolSettings.flattenFixed, (v) => { toolSettings.flattenFixed = v; renderPanel(); }));
+      panelBody.append(numberRow(toolSettings.flattenFixed ? 'Niveau (m)' : 'Dernier niveau (m)', () => toolSettings.flattenLevel, (v) => { if (isFinite(v)) { toolSettings.flattenLevel = v; toolSettings.flattenFixed = true; renderPanel(); } }, 0.1));
       brushControls();
       break;
     case 'water':
