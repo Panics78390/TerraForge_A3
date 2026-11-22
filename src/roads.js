@@ -306,6 +306,15 @@ export class RoadManager {
     // voie collée à une autre) : on les lie, elles doivent être à la même hauteur.
     stiff = 1;
     {
+      // jamais près d'un bout de pont : là, la route du haut et celle du bas doivent rester séparées
+      const bends = [];
+      for (const road of roadList) if (road.bridge && road.points.length >= 2) bends.push(road.points[0], road.points[road.points.length - 1]);
+      const nb = new Map();
+      const nearBridge = (i) => {
+        let v = nb.get(i);
+        if (v === undefined) { v = bends.some((e) => Math.hypot(e[0] - X[i], e[1] - Z[i]) < 20); nb.set(i, v); }
+        return v;
+      };
       const B = 12, hash = new Map();
       for (let i = 0; i < X.length; i++) { const k = Math.floor(X[i] / B) + ',' + Math.floor(Z[i] / B); let a = hash.get(k); if (!a) hash.set(k, (a = [])); a.push(i); }
       for (let i = 0; i < X.length; i++) {
@@ -313,7 +322,7 @@ export class RoadManager {
         for (let ax = gx - 1; ax <= gx + 1; ax++) for (let az = gz - 1; az <= gz + 1; az++) {
           const a = hash.get(ax + ',' + az);
           if (a) for (const j of a) {
-            if (j <= i || WAY[j] === WAY[i]) continue;
+            if (j <= i || WAY[j] === WAY[i] || nearBridge(i) || nearBridge(j)) continue;
             const d = Math.hypot(X[j] - X[i], Z[j] - Z[i]);
             // une route qui se termine contre une autre s'y raccorde, même sans la toucher tout à fait
             const reach = END.has(i) ? HW[j] + 3 : END.has(j) ? HW[i] + 3 : 0;
