@@ -39,7 +39,7 @@ export function openGeoDialog() {
       sizeIdx: 1, grid: 1024, cell: 4, maskRes: 2048,
       relief: true, altMode: 'real',
       satellite: true, satSource: 'auto', satRes: 4096,
-      roads: true, paths: false, landuse: true, trees: true, treeDensity: 40, buildings: true,
+      roads: true, paths: false, landuse: true, trees: true, treeDensity: 40, buildings: true, bridgeModels: false,
     };
     const root = document.createElement('div');
     root.id = 'wizard';
@@ -130,6 +130,7 @@ export function openGeoDialog() {
         check('Occupation du sol', 'landuse', 'Forêts, champs, plages, roche, eau : peints au sol'),
         check('Arbres', 'trees', 'Plante les forêts avec un mélange d\'essences'),
         check('Bâtiments', 'buildings', 'Une maison placée et orientée par bâtiment'),
+        check('Ponts', 'bridgeModels', 'Pose les ponts d\'Arma 3 (sinon l\'emplacement reste libre, relief conservé)'),
       );
       const $ = (k) => side.querySelector(`[data-k=${k}]`);
       const sresInfo = () => { $('sresinfo').textContent = `Soit ${(size() / cfg.satRes).toFixed(2)} m par pixel sur cette carte.`; };
@@ -641,9 +642,10 @@ export function parseOSM(json, cfg) {
         // Découpe aux bords de la carte.
         let seg = [];
         // Ponts désactivés par défaut (cfg.bridges) : la route suit alors le sol nivelé.
-        // Sans pont posé, la route est marquée `over` : elle rejoindra à niveau celles qu'elle croise.
+        // Pont : le relief qu'il enjambe est conservé. En mode « flat », la route est marquée
+        // `over` et rejoint à niveau celles qu'elle croise.
         const isBridge = !!t.bridge && t.bridge !== 'no';
-        const flag = isBridge ? (cfg.bridges ? { bridge: true } : { over: true }) : {};
+        const flag = isBridge ? (cfg.bridges === 'flat' ? { over: true } : { bridge: true }) : {};
         const flush = () => { if (seg.length >= 2) roads.push({ type, raw: true, points: seg, ...flag }); seg = []; };
         for (const p of pts) { if (inside(p)) seg.push([round(p[0]), round(p[1])]); else flush(); }
         flush();

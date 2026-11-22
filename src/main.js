@@ -1702,7 +1702,6 @@ function bridgeShape(id) {
 // hauteur du tablier. Les routes ainsi équipées sont marquées `deck` (pas de route au sol).
 function placeBridges(osm, models) {
   const list = [];
-  if (!models.length) return list;
   for (const r of osm.roads) {
     if (!r.bridge || r.points.length < 2) continue;
     const dk = roads.deck(r);
@@ -1710,6 +1709,8 @@ function placeBridges(osm, models) {
     // routes et rues : pont routier ; chemins et sentiers : petit pont (à défaut, ce qui existe)
     const pref = r.type === 3 || r.type === 5 ? ['geo_bridge_small', 'geo_bridge_asphalt', 'geo_bridge_highway'] : ['geo_bridge_asphalt', 'geo_bridge_highway', 'geo_bridge_small'];
     const fit = pref.map((id) => models.find((m) => m.id === id)).find(Boolean);
+    // Sans modèle : l'emplacement reste libre (relief conservé), à toi d'y poser un pont.
+    if (!fit) { r.deck = true; continue; }
     const n = Math.max(1, Math.round(dk.L / fit.len));
     const pitch = Math.atan2(dk.h1 - dk.h0, dk.L);
     for (let k = 0; k < n; k++) {
@@ -1864,7 +1865,7 @@ async function buildGeoMap(cfg, heights, osm, sat = null) {
   }
   // Ponts : seulement avec les vrais modèles Arma 3 (sinon la route est simplement surélevée).
   const bridgeModels = [];
-  if (a3.count && osm.roads.some((r) => r.bridge)) for (const [id, name, tbName] of GEO_BRIDGES) {
+  if (cfg.bridgeModels && a3.count && osm.roads.some((r) => r.bridge)) for (const [id, name, tbName] of GEO_BRIDGES) {
     if (!a3.byName.get(tbName.toLowerCase())) continue;
     if (!objects.entry(id)) await load({ id, name, tbName, shape: 'box', color: '#9a9a9a', height: 2, w: 12, d: 40, cat: 'Ponts' });
     const sh = objects.entry(id).p3d && !objects.entry(id)._missing ? bridgeShape(id) : null;
@@ -2432,7 +2433,7 @@ const mcpApi = {
       lat: +a.lat, lon: +a.lon, grid, cell, maskRes: 2048,
       relief: on(a.relief), altMode: 'real',
       satellite: on(a.satellite), satSource: 'auto', satRes: 4096,
-      roads: on(a.routes), paths: on(a.chemins, false), landuse: on(a.sols), trees: on(a.arbres), treeDensity: +a.densite_arbres || 40, buildings: on(a.batiments), bridges: on(a.ponts, false),
+      roads: on(a.routes), paths: on(a.chemins, false), landuse: on(a.sols), trees: on(a.arbres), treeDensity: +a.densite_arbres || 40, buildings: on(a.batiments), bridgeModels: on(a.ponts, false), bridges: a.croisements_a_niveau ? 'flat' : 'real',
     };
     if (!isFinite(cfg.lat) || !isFinite(cfg.lon)) return { erreur: 'lat et lon sont obligatoires.' };
     const t0 = Date.now();
