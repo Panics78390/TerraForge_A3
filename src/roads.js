@@ -260,16 +260,23 @@ export class RoadManager {
     const T = this.terrain, N = T.N, c = T.cell, H = T.heights;
     const X = [], Z = [], G = [], ids = new Map(), ways = [], E0 = [], E1 = [], EW = [];
     const key = (p) => Math.round(p[0] * 20) + ',' + Math.round(p[1] * 20);
+    // Importance d'une route : la plus importante impose son profil aux croisements
+    // (elle est plus « raide » dans le lissage et gagne quand deux chaussées se recouvrent).
+    const rank = (road) => ({ 1: 4, 2: 3, 4: 2, 3: 1, 5: 0 }[road.type] ?? 2);
+    const END = new Set();     // extrémités de routes
+    const WAY = [], HW = [];   // par point : route d'origine et demi-largeur
+    let stiff = 1, cur = -1, curHw = 0;
     const node = (x, z, k) => {
       if (k !== null) { const id = ids.get(k); if (id !== undefined) return id; }
       const id = X.length;
-      X.push(x); Z.push(z); G.push(T.heightAt(x, z));
+      X.push(x); Z.push(z); G.push(T.heightAt(x, z)); WAY.push(cur); HW.push(curHw);
       if (k !== null) ids.set(k, id);
       return id;
     };
-    const edge = (a, b, d, w = Math.min(4, step / Math.max(d, 0.5))) => { if (a !== b) { E0.push(a); E1.push(b); EW.push(lambda * w); } };
+    const edge = (a, b, d, w = Math.min(4, step / Math.max(d, 0.5)) * stiff) => { if (a !== b) { E0.push(a); E1.push(b); EW.push(lambda * w); } };
     for (const road of roadList) {
       if (road.bridge || road.points.length < 2) continue;
+      stiff = [0.6, 1, 1, 2, 4][rank(road)]; cur = ways.length; curHw = this.type(road.type).width / 2;
       const seq = [];
       if (road.raw) {
         let prev = node(road.points[0][0], road.points[0][1], key(road.points[0]));
@@ -293,6 +300,27 @@ export class RoadManager {
         });
       }
       ways.push({ road, seq });
+      END.add(seq[0]); END.add(seq[seq.length - 1]);
+    }
+    // Routes qui se recouvrent sans point commun (croisement non relié dans OpenStreetMap,
+    // voie collée à une autre) : on les lie, elles doivent être à la même hauteur.
+    stiff = 1;
+    {
+      const B = 12, hash = new Map();
+      for (let i = 0; i < X.length; i++) { const k = Math.floor(X[i] / B) + ',' + Math.floor(Z[i] / B); let a = hash.get(k); if (!a) hash.set(k, (a = [])); a.push(i); }
+      for (let i = 0; i < X.length; i++) {
+        const gx = Math.floor(X[i] / B), gz = Math.floor(Z[i] / B);
+        for (let ax = gx - 1; ax <= gx + 1; ax++) for (let az = gz - 1; az <= gz + 1; az++) {
+          const a = hash.get(ax + ',' + az);
+          if (a) for (const j of a) {
+            if (j <= i || WAY[j] === WAY[i]) continue;
+            const d = Math.hypot(X[j] - X[i], Z[j] - Z[i]);
+            // une route qui se termine contre une autre s'y raccorde, même sans la toucher tout à fait
+            const reach = END.has(i) ? HW[j] + 3 : END.has(j) ? HW[i] + 3 : 0;
+            if (d < Math.max(Math.min(HW[i], HW[j]) + 1, reach)) edge(i, j, step, 2);
+          }
+        }
+      }
     }
     // Croisements pont / route sans point commun.
     //  - pont posé ou emplacement libre (`bridge`) : la route du dessous est abaissée s'il le
@@ -356,6 +384,7 @@ export class RoadManager {
     for (const road of roadList) if (road.bridge && road.points.length >= 2) ends.push(road.points[0], road.points[road.points.length - 1]);
     for (const { road, seq } of ways) {
       const core = this.type(road.type).width / 2 + c * 0.75, R = core + shoulder;
+      const prio = [1, 3, 10, 30, 100][rank(road)];
       const mine = ends.filter((e) => key(e) === key(road.points[0]) || key(e) === key(road.points[road.points.length - 1]));
       for (let k = 0; k < seq.length; k++) {
         const a = seq[Math.max(0, k - 1)], b = seq[k];
@@ -363,8 +392,8 @@ export class RoadManager {
         for (let m = 1; m <= steps; m++) {
           const t = k === 0 ? 1 : m / steps;
           const px = X[a] + (X[b] - X[a]) * t, pz = Z[a] + (Z[b] - Z[a]) * t, target = h[a] + (h[b] - h[a]) * t;
-          let boost = 1;
-          for (const e of mine) if (Math.hypot(e[0] - px, e[1] - pz) < 16) boost = 200;
+          let boost = prio;
+          for (const e of mine) if (Math.hypot(e[0] - px, e[1] - pz) < 12) boost = prio * 3;
           const i0 = Math.max(0, Math.floor((px - R) / c)), i1 = Math.min(N - 1, Math.ceil((px + R) / c));
           const j0 = Math.max(0, Math.floor((pz - R) / c)), j1 = Math.min(N - 1, Math.ceil((pz + R) / c));
           for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
