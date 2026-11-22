@@ -109,6 +109,13 @@ const cursorDot = new THREE.Mesh(
 cursorDot.renderOrder = 21;
 cursorDot.visible = false;
 scene.add(cursorDot);
+// Trait entre le dernier objet posé et le curseur (pose en ligne, Maj enfoncée).
+const lineGuide = new THREE.Line(
+  new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(new Float32Array(33 * 3), 3)),
+  new THREE.LineBasicMaterial({ color: 0xffb040, depthTest: false, transparent: true }),
+);
+lineGuide.renderOrder = 22; lineGuide.visible = false; lineGuide.frustumCulled = false;
+scene.add(lineGuide);
 const BRUSH_RINGS = [
   { line: cursor, scale: 1 },
   { line: cursorGlow, scale: 1.045 },
@@ -193,6 +200,9 @@ const toolSettings = {
     set: [],                 // modèles cochés pour le pinceau (Ctrl+clic dans le catalogue)
     density: 120, spacing: 3, thin: true, erase: false, eraseOnlySet: true,
     slopeOn: false, maxSlope: 35, avoidWater: true, avoidRoads: true, roadMargin: 2,
+    shape: 'round',          // forme du pinceau : 'round' ou 'square'
+    avoidSurfOn: false, avoidSurf: [], // sols (par nom) où le pinceau ne pose rien
+    lineStep: 0, lineAlign: true, last: null, // pose en ligne (Maj+clic) : pas (0 = longueur du modèle), orientation, dernier point
   },
   scatter: {
     density: 250,     // arbres / hectare
@@ -405,8 +415,21 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
     const e2 = objects.entry(toolSettings.placeLib);
     if (!e2) return;
     pushUndo(P.autoFlat ? 'oh' : 'o');
-    if (P.autoFlat) { flattenFootprint(e2.id, hover.x, hover.z, P.rot, P.nextScale); objects.refreshHeights(); roads.rebuild(); }
-    objects.add(placeProps(e2.id, hover.x, hover.z, P.rot, P.nextScale, P));
+    if (e.shiftKey && P.last && Math.hypot(hover.x - P.last.x, hover.z - P.last.z) > 0.5) {
+      // Maj+clic : une rangée d'objets du dernier point posé jusqu'ici.
+      const pts = linePoints(e2.id, P.last, hover).slice(1);
+      for (const q of pts) {
+        if (P.autoFlat) flattenFootprint(e2.id, q.x, q.z, q.rot, q.scale);
+        objects.add(placeProps(e2.id, q.x, q.z, q.rot, q.scale, P));
+      }
+      if (P.autoFlat) { objects.refreshHeights(); roads.rebuild(); }
+      if (P.lineAlign && pts.length) P.rot = pts[pts.length - 1].rot;
+      P.last = pts.length ? { x: pts[pts.length - 1].x, z: pts[pts.length - 1].z } : P.last;
+    } else {
+      if (P.autoFlat) { flattenFootprint(e2.id, hover.x, hover.z, P.rot, P.nextScale); objects.refreshHeights(); roads.rebuild(); }
+      objects.add(placeProps(e2.id, hover.x, hover.z, P.rot, P.nextScale, P));
+      P.last = { x: hover.x, z: hover.z };
+    }
     nextPlacement();
     updateInfo();
     return;
@@ -672,7 +695,8 @@ function applyTool(dt) {
       const P = toolSettings.place;
       if (shiftDown || P.erase) {
         const ids = new Set(placeSet());
-        const victims = objects.query(x, z, r).filter((o) => !P.eraseOnlySet || ids.has(o.lib));
+        const sq = P.shape === 'square';
+        const victims = objects.query(x, z, sq ? r * 1.42 : r).filter((o) => (!P.eraseOnlySet || ids.has(o.lib)) && (!sq || (Math.abs(o.x - x) <= r && Math.abs(o.z - z) <= r)));
         if (victims.length) objects.remove(victims);
       } else scatter(x, z, r, { ...P, maxSlope: P.slopeOn ? P.maxSlope : 91, randomRot: toolSettings.placeRandomRot }, placeSet().map((id) => [id, 1]));
       break;
@@ -727,6 +751,31 @@ function nextPlacement() {
   P.nextScale = P.scaleMin + Math.random() * Math.max(0, P.scaleMax - P.scaleMin);
 }
 
+// Points d'une rangée d'objets entre a et b (a compris) : pas régulier, objets tournés le long de la ligne.
+function linePoints(id, a, b) {
+  const P = toolSettings.place;
+  const dx = b.x - a.x, dz = b.z - a.z, L = Math.hypot(dx, dz);
+  const step = Math.max(0.2, P.lineStep > 0 ? P.lineStep : footprint(id).hx * 2 * ((P.scaleMin + P.scaleMax) / 2));
+  const n = Math.min(500, Math.floor(L / step + 0.25));
+  const along = Math.atan2(-dz, dx); // l'axe long (X) du modèle suit la ligne
+  const out = [];
+  for (let k = 0; k <= n; k++) {
+    const t = (k * step) / L;
+    out.push({
+      x: a.x + dx * t, z: a.z + dz * t,
+      rot: P.lineAlign ? along : toolSettings.placeRandomRot ? Math.random() * Math.PI * 2 : P.rot,
+      scale: P.scaleMin + Math.random() * Math.max(0, P.scaleMax - P.scaleMin),
+    });
+  }
+  return out;
+}
+
+// Indice de la surface peinte au sol en (x, z).
+function surfaceIndexAt(x, z) {
+  const R = terrain.maskRes, [px, py] = terrain.worldToMask(x, z);
+  return terrain.surf[Math.max(0, Math.min(R - 1, Math.floor(py))) * R + Math.max(0, Math.min(R - 1, Math.floor(px)))];
+}
+
 // Met le sol à plat sous l'emprise d'un modèle, à l'altitude de son centre, bords adoucis.
 function flattenFootprint(id, x, z, rot, scale) {
   const f = footprint(id), hx = f.hx * scale + 0.5, hz = f.hz * scale + 0.5, soft = 4;
@@ -745,21 +794,25 @@ function flattenFootprint(id, x, z, rot, scale) {
 function scatter(x, z, r, S = toolSettings.scatter, list = scatterSpecies()) {
   if (!list.length) { toast(state.tool === 'place' ? 'Coche au moins un modèle : Ctrl+clic dans le catalogue du bas' : 'Choisis au moins une essence dans le panneau'); painting = false; return; }
   const ids = new Set(list.map(([id]) => id));
-  const area = Math.PI * r * r;
+  const sq = S.shape === 'square';
+  const area = sq ? 4 * r * r : Math.PI * r * r;
   const target = Math.round((S.density * area) / 10000);
-  const existing = objects.query(x, z, r).filter((o) => ids.has(o.lib)).length;
+  const existing = objects.query(x, z, sq ? r * 1.42 : r).filter((o) => ids.has(o.lib) && (!sq || (Math.abs(o.x - x) <= r && Math.abs(o.z - z) <= r))).length;
+  const banned = S.avoidSurfOn && S.avoidSurf?.length ? new Set(terrain.surfaces.map((sf, i) => (S.avoidSurf.includes(sf.name) ? i : -1))) : null;
   let toAdd = Math.min(400, target - existing);
   let tries = toAdd * 4;
   while (toAdd > 0 && tries-- > 0) {
-    const a = rng() * Math.PI * 2, d = Math.sqrt(rng()) * r;
+    let px, pz, d;
+    if (sq) { px = x + (rng() * 2 - 1) * r; pz = z + (rng() * 2 - 1) * r; d = Math.max(Math.abs(px - x), Math.abs(pz - z)); }
+    else { const a = rng() * Math.PI * 2; d = Math.sqrt(rng()) * r; px = x + Math.cos(a) * d; pz = z + Math.sin(a) * d; }
     // moins dense vers le bord : la lisière se fond dans le décor
     if (S.thin && rng() < Math.pow(d / r, 3)) continue;
-    const px = x + Math.cos(a) * d, pz = z + Math.sin(a) * d;
     if (!terrain.inside(px, pz)) continue;
     const h = terrain.heightAt(px, pz);
     if (S.avoidWater && h < 0.5) continue;
     if (S.maxSlope < 90 && terrain.slopeAt(px, pz) > S.maxSlope) continue;
     if (S.avoidRoads && roads.nearRoad(px, pz, S.roadMargin || 0)) continue;
+    if (banned && banned.has(surfaceIndexAt(px, pz))) continue;
     if (S.spacing > 0 && objects.query(px, pz, S.spacing).length) continue;
     const rot = S.randomRot === false ? (S.rot || 0) : rng() * Math.PI * 2;
     const scale = S.scaleMin + rng() * Math.max(0, S.scaleMax - S.scaleMin);
@@ -808,6 +861,13 @@ function updateCursor() {
     const t = P.align ? terrainTilt(hover.x, hover.z, P.rot) : { rx: 0, rz: 0 };
     objects.setGhost(ge.id, hover.x, terrain.heightAt(hover.x, hover.z) - (P.sink || 0), hover.z, P.rot, P.nextScale, t.rx, t.rz);
   } else objects.clearGhost();
+  const lineOn = ge && shiftDown && toolSettings.place.last;
+  lineGuide.visible = !!lineOn;
+  if (lineOn) {
+    const a = toolSettings.place.last, G = lineGuide.geometry.attributes.position;
+    for (let k = 0; k <= 32; k++) { const t = k / 32, x = a.x + (hover.x - a.x) * t, z = a.z + (hover.z - a.z) * t; G.setXYZ(k, x, terrain.heightAt(x, z) + 1.2, z); }
+    G.needsUpdate = true; lineGuide.geometry.computeBoundingSphere();
+  }
   const show = hover && (brushPlace || !['nav', 'place', 'select', 'road'].includes(state.tool));
   for (const ring of BRUSH_RINGS) ring.line.visible = !!show;
   cursorDot.visible = !!show;
@@ -819,7 +879,9 @@ function updateCursor() {
     const rr = r * ring.scale;
     for (let k = 0; k <= 64; k++) {
       const a = (k / 64) * Math.PI * 2;
-      const x = hover.x + Math.cos(a) * rr, z = hover.z + Math.sin(a) * rr;
+      let cx = Math.cos(a), cz = Math.sin(a);
+      if (brushPlace && toolSettings.place.shape === 'square') { const m = Math.max(Math.abs(cx), Math.abs(cz)); cx /= m; cz /= m; }
+      const x = hover.x + cx * rr, z = hover.z + cz * rr;
       P.setXYZ(k, x, terrain.heightAt(x, z) + 1.5, z);
     }
     P.needsUpdate = true;
@@ -1012,6 +1074,10 @@ function renderPanel() {
         panelBody.append(checkRow('Incliner selon la pente', () => P.align, (v) => (P.align = v)));
         panelBody.append(slider('Enfoncer dans le sol (m)', () => P.sink, (v) => (P.sink = v), 0, 5, 0.05));
         panelBody.append(checkRow('Aplanir le sol sous l\'objet', () => P.autoFlat, (v) => (P.autoFlat = v)));
+        panelBody.append(h3('Pose en ligne'));
+        panelBody.append(note('Pose un premier objet, puis <b>Maj+clic</b> plus loin : une rangée est posée entre les deux (clôture, mur, haie, poteaux). Chaque Maj+clic continue la rangée.'));
+        panelBody.append(checkRow('Tourner les objets le long de la ligne', () => P.lineAlign, (v) => (P.lineAlign = v)));
+        panelBody.append(slider('Écart entre objets (m, 0 = longueur du modèle)', () => P.lineStep, (v) => (P.lineStep = v), 0, 100, 0.1));
         libraryTools();
         break;
       }
@@ -1034,7 +1100,12 @@ function renderPanel() {
       panelBody.append(h3('Pinceau'));
       panelBody.append(checkRow('Gommer', () => P.erase, (v) => (P.erase = v)));
       panelBody.append(checkRow('Gomme : modèles cochés seulement', () => P.eraseOnlySet, (v) => (P.eraseOnlySet = v)));
-      panelBody.append(slider('Rayon (m)', () => state.settings.radius, (v) => (state.settings.radius = v), 2, 1000, 1));
+      const shp = document.createElement('div'); shp.className = 'seg';
+      for (const [k, lab] of [['round', 'Rond'], ['square', 'Carré']]) {
+        const b = btn(lab, () => { P.shape = k; renderPanel(); }, 'small'); if (P.shape === k) b.classList.add('active'); shp.append(b);
+      }
+      panelBody.append(shp);
+      panelBody.append(slider(P.shape === 'square' ? 'Demi-côté (m)' : 'Rayon (m)', () => state.settings.radius, (v) => (state.settings.radius = v), 2, 1000, 1));
       panelBody.append(slider('Densité (/ha)', () => P.density, (v) => (P.density = v), 1, 3000, 1));
       panelBody.append(slider('Distance min (m)', () => P.spacing, (v) => (P.spacing = v), 0, 50, 0.5));
       panelBody.append(checkRow('Moins dense vers le bord', () => P.thin, (v) => (P.thin = v)));
@@ -1050,6 +1121,16 @@ function renderPanel() {
       panelBody.append(checkRow('Sur les routes et chemins', () => P.avoidRoads, (v) => { P.avoidRoads = v; renderPanel(); }));
       if (P.avoidRoads) panelBody.append(slider('Marge autour des routes (m)', () => P.roadMargin, (v) => (P.roadMargin = v), 0, 30, 0.5));
       panelBody.append(checkRow('Dans l\'eau', () => P.avoidWater, (v) => (P.avoidWater = v)));
+      panelBody.append(checkRow('Sur certains sols (forêt, béton…)', () => P.avoidSurfOn, (v) => {
+        P.avoidSurfOn = v;
+        if (v && !P.avoidSurf.length) { const fi = surfaceByRole('forest'); if (fi >= 0) P.avoidSurf = [terrain.surfaces[fi].name]; }
+        renderPanel();
+      }));
+      if (P.avoidSurfOn) for (const sf of terrain.surfaces) {
+        const row = checkRow(sf.name, () => P.avoidSurf.includes(sf.name), (v) => { P.avoidSurf = P.avoidSurf.filter((n) => n !== sf.name); if (v) P.avoidSurf.push(sf.name); });
+        row.style.paddingLeft = '16px';
+        panelBody.append(row);
+      }
       panelBody.append(note('La distance min écarte aussi les nouveaux objets de ceux déjà posés.'));
       break;
     }
@@ -1259,7 +1340,7 @@ function placePresets() {
     if (!placeSet().length) return toast('Coche d\'abord des modèles');
     const name = (nameInp.value || sel.value || '').trim();
     if (!name) return toast('Donne un nom au mélange');
-    const { set, rot, nextScale, mode, erase, ...settings } = P;
+    const { set, rot, nextScale, mode, erase, last, ...settings } = P;
     all[name] = { models: placeSet().map((id) => objects.entry(id).tbName || objects.entry(id).name), settings };
     try { localStorage.setItem(PRESET_KEY, JSON.stringify(all)); toast(`Mélange « ${name} » enregistré`); } catch { toast('Enregistrement impossible'); }
     renderPanel();
