@@ -322,6 +322,36 @@ export class ObjectManager {
   // Après une modification du relief, les objets doivent suivre le sol.
   refreshHeights() { this.rebuildAll(); }
 
+  // Aperçu translucide du modèle sous le curseur (outil Objet). y = altitude du point d'origine.
+  setGhost(id, x, y, z, rot = 0, scale = 1, rx = 0, rz = 0) {
+    const g = this.groups.get(id);
+    if (!g) return this.clearGhost();
+    if (!this.ghost || this.ghostId !== id || this.ghostParts !== g.parts) {
+      this.clearGhost();
+      this.ghost = new THREE.Group();
+      const mat = new THREE.MeshBasicMaterial({ color: 0x6dffb0, transparent: true, opacity: 0.42, depthWrite: false });
+      for (const part of g.parts) {
+        const m = new THREE.Mesh(part.geometry, mat);
+        m.matrixAutoUpdate = false;
+        m.matrix.copy(part.matrix);
+        m.renderOrder = 8;
+        this.ghost.add(m);
+      }
+      this.ghostId = id; this.ghostParts = g.parts;
+      this.scene.add(this.ghost);
+    }
+    this.ghost.position.set(x, y, z);
+    this.ghost.rotation.set(rx, rot, rz, 'YXZ');
+    this.ghost.scale.setScalar(scale);
+    this.ghost.visible = true;
+  }
+  clearGhost() {
+    if (!this.ghost) return;
+    this.scene.remove(this.ghost);
+    this.ghost.children[0]?.material.dispose(); // les géométries appartiennent à la bibliothèque
+    this.ghost = null; this.ghostId = null; this.ghostParts = null;
+  }
+
   pick(x, z, r = 6) {
     let best = null, bd = Infinity;
     for (const o of this.query(x, z, r)) {

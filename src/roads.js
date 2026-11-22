@@ -48,8 +48,36 @@ export class RoadManager {
     return curve.getSpacedPoints(n);
   }
 
+  // Vrai si (x, z) est sur une route ou à moins de `margin` mètres de son bord.
+  // S'appuie sur une grille de points recalculée seulement quand les routes changent.
+  nearRoad(x, z, margin = 0) {
+    if (!this._grid) {
+      const C = 16, g = new Map();
+      let maxHw = 0;
+      for (const road of this.roads) {
+        if (road.points.length < 2) continue;
+        const hw = this.type(road.type).width / 2;
+        if (hw > maxHw) maxHw = hw;
+        for (const p of this.sample(road, 3)) {
+          const k = Math.floor(p.x / C) + ',' + Math.floor(p.z / C);
+          let a = g.get(k); if (!a) g.set(k, (a = []));
+          a.push(p.x, p.z, hw);
+        }
+      }
+      this._grid = { C, g, maxHw };
+    }
+    const { C, g, maxHw } = this._grid, R = maxHw + margin + 2;
+    for (let gx = Math.floor((x - R) / C); gx <= Math.floor((x + R) / C); gx++)
+      for (let gz = Math.floor((z - R) / C); gz <= Math.floor((z + R) / C); gz++) {
+        const a = g.get(gx + ',' + gz);
+        if (a) for (let i = 0; i < a.length; i += 3) if (Math.hypot(a[i] - x, a[i + 1] - z) < a[i + 2] + margin + 1.5) return true;
+      }
+    return false;
+  }
+
   // Un seul maillage par type de route (des milliers de routes restent fluides).
   rebuild() {
+    this._grid = null;
     for (const c of [...this.group.children]) { this.group.remove(c); c.geometry.dispose(); c.material.dispose(); }
     const byType = new Map();
     for (const road of this.roads) {

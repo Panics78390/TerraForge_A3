@@ -183,12 +183,24 @@ const toolSettings = {
   paintHardness: 0.8,
   placeLib: null,
   placeRandomRot: true,
+  place: {
+    mode: 'single',          // 'single' : un objet par clic, 'brush' : pinceau
+    rot: 0, nextScale: 1,    // rotation et taille du prochain objet (aperçu)
+    scaleMin: 1, scaleMax: 1,
+    align: false,            // incliner l'objet selon la pente
+    sink: 0,                 // enfoncement dans le sol (m)
+    autoFlat: false,         // aplanir le sol sous l'objet (pose un par un)
+    set: [],                 // modèles cochés pour le pinceau (Ctrl+clic dans le catalogue)
+    density: 120, spacing: 3, thin: true, erase: false, eraseOnlySet: true,
+    slopeOn: false, maxSlope: 35, avoidWater: true, avoidRoads: true, roadMargin: 2,
+  },
   scatter: {
     density: 250,     // arbres / hectare
     spacing: 4,       // distance mini (m)
     scaleMin: 0.8, scaleMax: 1.25,
     maxSlope: 35,
     avoidWater: true,
+    avoidRoads: true, roadMargin: 2,
     species: {},
   },
   roadType: 1,
@@ -388,14 +400,18 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
     renderPanel();
     return;
   }
-  if (state.tool === 'place') {
-    pushUndo('o');
+  if (state.tool === 'place' && toolSettings.place.mode !== 'brush') {
+    const P = toolSettings.place;
     const e2 = objects.entry(toolSettings.placeLib);
     if (!e2) return;
-    objects.add({ lib: e2.id, x: hover.x, z: hover.z, rot: toolSettings.placeRandomRot ? Math.random() * Math.PI * 2 : 0, scale: 1 });
+    pushUndo(P.autoFlat ? 'oh' : 'o');
+    if (P.autoFlat) { flattenFootprint(e2.id, hover.x, hover.z, P.rot, P.nextScale); objects.refreshHeights(); roads.rebuild(); }
+    objects.add(placeProps(e2.id, hover.x, hover.z, P.rot, P.nextScale, P));
+    nextPlacement();
     updateInfo();
     return;
   }
+  if (state.tool === 'place' && !placeSet().length) { toast('Coche au moins un modèle : Ctrl+clic dans le catalogue du bas'); return; }
   if (state.tool === 'select') {
     if (gizmo.axis) return; // clic sur une poignée du gizmo
     const o = objects.pick(hover.x, hover.z, Math.max(6, state.settings.radius * 0.15));
@@ -581,8 +597,17 @@ renderer.domElement.addEventListener('pointerup', endLook);
 renderer.domElement.addEventListener('pointercancel', endLook);
 renderer.domElement.addEventListener('contextmenu', (e) => e.preventDefault());
 // Molette : avancer / reculer dans la direction du regard.
+let wheelPanel = 0;
 renderer.domElement.addEventListener('wheel', (e) => {
   e.preventDefault();
+  if (state.tool === 'place' && (e.ctrlKey || e.metaKey)) {
+    // Ctrl+molette : tourner l'objet à poser (15°, ou 1° avec Maj) ; au pinceau : taille du pinceau.
+    const P = toolSettings.place, dir = -Math.sign(e.deltaY);
+    if (P.mode === 'brush') state.settings.radius = Math.max(2, Math.min(1000, Math.round(state.settings.radius * (dir > 0 ? 1.12 : 0.89) * 10) / 10));
+    else { toolSettings.placeRandomRot = false; P.rot = ((P.rot + dir * (e.shiftKey ? 1 : 15) * Math.PI / 180) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2); }
+    clearTimeout(wheelPanel); wheelPanel = setTimeout(renderPanel, 250);
+    return;
+  }
   if (!controls.enabled) return;
   camera.getWorldDirection(_fwd);
   const alt = Math.max(6, camera.position.y - groundUnderCamera());
@@ -643,6 +668,15 @@ function applyTool(dt) {
     case 'scatter':
       if (shiftDown) eraseObjects(x, z, r); else scatter(x, z, r);
       break;
+    case 'place': {
+      const P = toolSettings.place;
+      if (shiftDown || P.erase) {
+        const ids = new Set(placeSet());
+        const victims = objects.query(x, z, r).filter((o) => !P.eraseOnlySet || ids.has(o.lib));
+        if (victims.length) objects.remove(victims);
+      } else scatter(x, z, r, { ...P, maxSlope: P.slopeOn ? P.maxSlope : 91, randomRot: toolSettings.placeRandomRot }, placeSet().map((id) => [id, 1]));
+      break;
+    }
   }
   const now = performance.now();
   if (['raise', 'smooth', 'flatten', 'water'].includes(state.tool) && now - lastObjRefresh > 300) {
@@ -663,10 +697,53 @@ function pickSpecies(list) {
   return list[list.length - 1][0];
 }
 
-function scatter(x, z, r) {
-  const S = toolSettings.scatter;
-  const list = scatterSpecies();
-  if (!list.length) { toast('Choisis au moins une essence dans le panneau'); painting = false; return; }
+// Modèles cochés pour le pinceau d'objets (ceux encore présents dans la bibliothèque).
+function placeSet() {
+  const P = toolSettings.place;
+  P.set = P.set.filter((id) => objects.entry(id));
+  return P.set;
+}
+
+// Inclinaison (rx, rz) qui couche un objet tourné de `rot` sur la pente du terrain.
+function terrainTilt(x, z, rot) {
+  const d = Math.max(1, terrain.cell * 0.5), c = Math.cos(rot), sn = Math.sin(rot);
+  const sz = (terrain.heightAt(x + sn * d, z + c * d) - terrain.heightAt(x - sn * d, z - c * d)) / (2 * d); // pente vers l'avant
+  const sx = (terrain.heightAt(x + c * d, z - sn * d) - terrain.heightAt(x - c * d, z + sn * d)) / (2 * d); // pente vers la droite
+  return { rx: -Math.atan(sz), rz: Math.atan(sx) };
+}
+
+// Objet prêt à poser, avec les réglages de pose (inclinaison sur la pente, enfoncement).
+function placeProps(lib, x, z, rot, scale, P) {
+  const o = { lib, x, z, rot, scale };
+  if (P.align) { const t = terrainTilt(x, z, rot); if (Math.abs(t.rx) > 0.002) o.rx = t.rx; if (Math.abs(t.rz) > 0.002) o.rz = t.rz; }
+  if (P.sink) o.dy = -P.sink;
+  return o;
+}
+
+// Tire la rotation et la taille du prochain objet posé un par un (montrées par l'aperçu).
+function nextPlacement() {
+  const P = toolSettings.place;
+  if (toolSettings.placeRandomRot) P.rot = Math.random() * Math.PI * 2;
+  P.nextScale = P.scaleMin + Math.random() * Math.max(0, P.scaleMax - P.scaleMin);
+}
+
+// Met le sol à plat sous l'emprise d'un modèle, à l'altitude de son centre, bords adoucis.
+function flattenFootprint(id, x, z, rot, scale) {
+  const f = footprint(id), hx = f.hx * scale + 0.5, hz = f.hz * scale + 0.5, soft = 4;
+  const target = terrain.heightAt(x, z), c = Math.cos(rot), sn = Math.sin(rot);
+  terrain.applyBrush(x, z, Math.hypot(hx, hz) + soft, 0, (h, _w, i, j) => {
+    const dx = i * terrain.cell - x, dz = j * terrain.cell - z;
+    const u = Math.abs(dx * c - dz * sn) - hx, v = Math.abs(dx * sn + dz * c) - hz;
+    const d = Math.hypot(Math.max(0, u), Math.max(0, v));
+    const a = d >= soft ? 0 : 1 - d / soft;
+    return h + (target - h) * a * a * (3 - 2 * a);
+  });
+}
+
+// Sème des objets dans le disque (x, z, r). S : réglages (densité, espacement, tailles,
+// zones interdites…), list : [[modèle, poids], …].
+function scatter(x, z, r, S = toolSettings.scatter, list = scatterSpecies()) {
+  if (!list.length) { toast(state.tool === 'place' ? 'Coche au moins un modèle : Ctrl+clic dans le catalogue du bas' : 'Choisis au moins une essence dans le panneau'); painting = false; return; }
   const ids = new Set(list.map(([id]) => id));
   const area = Math.PI * r * r;
   const target = Math.round((S.density * area) / 10000);
@@ -675,17 +752,18 @@ function scatter(x, z, r) {
   let tries = toAdd * 4;
   while (toAdd > 0 && tries-- > 0) {
     const a = rng() * Math.PI * 2, d = Math.sqrt(rng()) * r;
+    // moins dense vers le bord : la lisière se fond dans le décor
+    if (S.thin && rng() < Math.pow(d / r, 3)) continue;
     const px = x + Math.cos(a) * d, pz = z + Math.sin(a) * d;
     if (!terrain.inside(px, pz)) continue;
     const h = terrain.heightAt(px, pz);
     if (S.avoidWater && h < 0.5) continue;
-    if (terrain.slopeAt(px, pz) > S.maxSlope) continue;
-    if (objects.query(px, pz, S.spacing).length) continue;
-    objects.add({
-      lib: pickSpecies(list), x: px, z: pz,
-      rot: rng() * Math.PI * 2,
-      scale: S.scaleMin + rng() * (S.scaleMax - S.scaleMin),
-    });
+    if (S.maxSlope < 90 && terrain.slopeAt(px, pz) > S.maxSlope) continue;
+    if (S.avoidRoads && roads.nearRoad(px, pz, S.roadMargin || 0)) continue;
+    if (S.spacing > 0 && objects.query(px, pz, S.spacing).length) continue;
+    const rot = S.randomRot === false ? (S.rot || 0) : rng() * Math.PI * 2;
+    const scale = S.scaleMin + rng() * Math.max(0, S.scaleMax - S.scaleMin);
+    objects.add(S.align || S.sink ? placeProps(pickSpecies(list), px, pz, rot, scale, S) : { lib: pickSpecies(list), x: px, z: pz, rot, scale });
     toAdd--;
   }
 }
@@ -722,12 +800,20 @@ function resize() {
 window.addEventListener('resize', resize);
 
 function updateCursor() {
-  const show = hover && !['nav', 'place', 'select', 'road'].includes(state.tool);
+  const brushPlace = state.tool === 'place' && toolSettings.place.mode === 'brush';
+  // Aperçu de l'objet qui sera posé au clic.
+  const ge = state.tool === 'place' && !brushPlace && hover ? objects.entry(toolSettings.placeLib) : null;
+  if (ge) {
+    const P = toolSettings.place;
+    const t = P.align ? terrainTilt(hover.x, hover.z, P.rot) : { rx: 0, rz: 0 };
+    objects.setGhost(ge.id, hover.x, terrain.heightAt(hover.x, hover.z) - (P.sink || 0), hover.z, P.rot, P.nextScale, t.rx, t.rz);
+  } else objects.clearGhost();
+  const show = hover && (brushPlace || !['nav', 'place', 'select', 'road'].includes(state.tool));
   for (const ring of BRUSH_RINGS) ring.line.visible = !!show;
   cursorDot.visible = !!show;
   if (!show) return;
   const r = state.settings.radius;
-  const col = state.tool === 'scatter' && shiftDown ? 0xff5050 : state.tool === 'raise' && shiftDown ? 0x60b0ff : 0x3aa8b8;
+  const col = (state.tool === 'scatter' && shiftDown) || (brushPlace && (shiftDown || toolSettings.place.erase)) ? 0xff5050 : state.tool === 'raise' && shiftDown ? 0x60b0ff : 0x3aa8b8;
   for (const ring of BRUSH_RINGS) {
     const P = ring.line.geometry.attributes.position;
     const rr = r * ring.scale;
@@ -901,16 +987,72 @@ function renderPanel() {
       panelBody.append(slider('Échelle max', () => S.scaleMax, (v) => (S.scaleMax = Math.max(v, S.scaleMin)), 0.3, 2.5, 0.05));
       panelBody.append(slider('Pente max (°)', () => S.maxSlope, (v) => (S.maxSlope = v), 5, 90, 1));
       panelBody.append(checkRow('Éviter l\'eau', () => S.avoidWater, (v) => (S.avoidWater = v)));
+      panelBody.append(checkRow('Éviter les routes', () => S.avoidRoads, (v) => (S.avoidRoads = v)));
       panelBody.append(checkRow('Gomme : essences du mélange seulement', () => !!S.eraseOnlySpecies, (v) => (S.eraseOnlySpecies = v)));
       brushControls(false, false);
       break;
     }
-    case 'place':
-      panelBody.append(note('Clique sur le terrain pour poser l\'objet choisi. Utilise l\'outil Sélection pour le déplacer ou le tourner.'));
-      panelBody.append(checkRow('Rotation aléatoire', () => toolSettings.placeRandomRot, (v) => (toolSettings.placeRandomRot = v)));
-      panelBody.append(note('Choisis le modèle dans le <b>catalogue en bas de l\'écran</b>.'));
-      libraryTools();
+    case 'place': {
+      const P = toolSettings.place;
+      const modes = document.createElement('div');
+      modes.className = 'seg';
+      for (const [id, label] of [['single', 'Un par un'], ['brush', 'Pinceau']]) {
+        const b = btn(label, () => { P.mode = id; renderPanel(); renderAssets(); }, P.mode === id ? 'active' : '');
+        modes.append(b);
+      }
+      panelBody.append(modes);
+      const setRot = (v) => { toolSettings.placeRandomRot = v; const c = assetsEl.querySelector('[data-k=rot]'); if (c) c.checked = v; renderPanel(); };
+      if (P.mode === 'single') {
+        panelBody.append(note('Choisis un modèle dans le <b>catalogue du bas</b> : son aperçu suit le curseur, clique pour le poser. <b>Ctrl+molette</b> : tourner de 15° (avec <b>Maj</b> : 1°).'));
+        panelBody.append(h3('Pose'));
+        panelBody.append(checkRow('Rotation aléatoire', () => toolSettings.placeRandomRot, setRot));
+        if (!toolSettings.placeRandomRot) panelBody.append(slider('Rotation (°)', () => Math.round((P.rot * 180) / Math.PI), (v) => (P.rot = (v * Math.PI) / 180), 0, 359, 1));
+        panelBody.append(slider('Échelle min', () => P.scaleMin, (v) => { P.scaleMin = Math.min(v, P.scaleMax); nextPlacement(); }, 0.3, 3, 0.05));
+        panelBody.append(slider('Échelle max', () => P.scaleMax, (v) => { P.scaleMax = Math.max(v, P.scaleMin); nextPlacement(); }, 0.3, 3, 0.05));
+        panelBody.append(checkRow('Incliner selon la pente', () => P.align, (v) => (P.align = v)));
+        panelBody.append(slider('Enfoncer dans le sol (m)', () => P.sink, (v) => (P.sink = v), 0, 5, 0.05));
+        panelBody.append(checkRow('Aplanir le sol sous l\'objet', () => P.autoFlat, (v) => (P.autoFlat = v)));
+        libraryTools();
+        break;
+      }
+      panelBody.append(note('Coche plusieurs modèles avec <b>Ctrl+clic</b> dans le catalogue du bas, puis peins : ils sont semés au hasard. <b>Maj</b> : gommer. <b>Ctrl+molette</b> : taille du pinceau.'));
+      panelBody.append(h3(`Modèles cochés (${placeSet().length})`));
+      if (placeSet().length) {
+        const list = document.createElement('div');
+        list.className = 'list';
+        for (const id of placeSet()) {
+          const e = objects.entry(id);
+          const it = document.createElement('div');
+          it.className = 'item';
+          it.innerHTML = `<span class="sw" style="background:${e.color || '#888'}"></span><div class="grow"><div>${esc(e.name)}</div><div class="sub">${esc(e.tbName || '')}</div></div>`;
+          it.append(btn(icon('close', 12), () => { P.set = P.set.filter((x) => x !== id); renderPanel(); renderAssets(); }, 'small'));
+          list.append(it);
+        }
+        panelBody.append(list, btn('Tout décocher', () => { P.set = []; renderPanel(); renderAssets(); }, 'small'));
+      } else panelBody.append(note('Aucun pour l\'instant.'));
+      placePresets();
+      panelBody.append(h3('Pinceau'));
+      panelBody.append(checkRow('Gommer', () => P.erase, (v) => (P.erase = v)));
+      panelBody.append(checkRow('Gomme : modèles cochés seulement', () => P.eraseOnlySet, (v) => (P.eraseOnlySet = v)));
+      panelBody.append(slider('Rayon (m)', () => state.settings.radius, (v) => (state.settings.radius = v), 2, 1000, 1));
+      panelBody.append(slider('Densité (/ha)', () => P.density, (v) => (P.density = v), 1, 3000, 1));
+      panelBody.append(slider('Distance min (m)', () => P.spacing, (v) => (P.spacing = v), 0, 50, 0.5));
+      panelBody.append(checkRow('Moins dense vers le bord', () => P.thin, (v) => (P.thin = v)));
+      panelBody.append(h3('Hasard et pose'));
+      panelBody.append(slider('Échelle min', () => P.scaleMin, (v) => (P.scaleMin = Math.min(v, P.scaleMax)), 0.3, 3, 0.05));
+      panelBody.append(slider('Échelle max', () => P.scaleMax, (v) => (P.scaleMax = Math.max(v, P.scaleMin)), 0.3, 3, 0.05));
+      panelBody.append(checkRow('Rotation aléatoire', () => toolSettings.placeRandomRot, setRot));
+      panelBody.append(checkRow('Incliner selon la pente', () => P.align, (v) => (P.align = v)));
+      panelBody.append(slider('Enfoncer dans le sol (m)', () => P.sink, (v) => (P.sink = v), 0, 5, 0.05));
+      panelBody.append(h3('Ne pas poser'));
+      panelBody.append(checkRow('Sur les pentes raides', () => P.slopeOn, (v) => { P.slopeOn = v; renderPanel(); }));
+      if (P.slopeOn) panelBody.append(slider('Pente max (°)', () => P.maxSlope, (v) => (P.maxSlope = v), 5, 90, 1));
+      panelBody.append(checkRow('Sur les routes et chemins', () => P.avoidRoads, (v) => { P.avoidRoads = v; renderPanel(); }));
+      if (P.avoidRoads) panelBody.append(slider('Marge autour des routes (m)', () => P.roadMargin, (v) => (P.roadMargin = v), 0, 30, 0.5));
+      panelBody.append(checkRow('Dans l\'eau', () => P.avoidWater, (v) => (P.avoidWater = v)));
+      panelBody.append(note('La distance min écarte aussi les nouveaux objets de ceux déjà posés.'));
       break;
+    }
     case 'select': {
       panelBody.append(note('Clique un objet pour le sélectionner, puis utilise les <b>poignées</b> affichées dessus.<br><b>Espace</b> : changer de mode (déplacer, tourner, échelle) · <b>T</b> / <b>R</b> / <b>Y</b> : mode direct · <b>X</b> : pivoter de 15° · <b>Suppr</b> supprimer · <b>Alt + glisser</b> : déplacement libre.'));
       const modes = document.createElement('div');
@@ -1077,6 +1219,58 @@ function refreshRoadTextures() {
   for (const t of roads.types) if (!t.tex && ROAD_DEFAULT_TEX[t.id] && a3.resolve(ROAD_DEFAULT_TEX[t.id])) t.tex = ROAD_DEFAULT_TEX[t.id];
   for (const [k, v] of roadTex) if (!v) roadTex.delete(k); // nouvelles sources : on retente
   roads.rebuild();
+}
+
+// Mélanges enregistrés pour le pinceau d'objets (gardés sur cet ordinateur).
+const PRESET_KEY = 'terraforge-melanges';
+function loadPresets() { try { return JSON.parse(localStorage.getItem(PRESET_KEY) || '{}') || {}; } catch { return {}; } }
+function placePresets() {
+  const P = toolSettings.place, all = loadPresets(), names = Object.keys(all).sort();
+  panelBody.append(h3('Mélanges enregistrés'));
+  const row = document.createElement('div');
+  row.className = 'row';
+  const sel = document.createElement('select');
+  sel.innerHTML = `<option value="">${names.length ? 'Choisir…' : 'Aucun'}</option>` + names.map((n) => `<option>${esc(n)}</option>`).join('');
+  sel.onchange = async () => {
+    const pr = all[sel.value];
+    if (!pr) return;
+    const ids = [];
+    let missing = 0;
+    for (const m of pr.models) {
+      let e = objects.library.find((x) => (x.tbName || x.name).toLowerCase() === m.toLowerCase());
+      if (!e) {
+        const key = a3.byName.get(m.toLowerCase());
+        if (key) e = await objects.addLibraryEntry({ id: 'a3_' + Date.now().toString(36) + Math.floor(Math.random() * 1e4), name: m, tbName: m, cat: guessCategory(key), p3d: key });
+      }
+      if (e) ids.push(e.id); else missing++;
+    }
+    Object.assign(P, pr.settings || {}, { set: ids, mode: 'brush' });
+    renderPanel(); renderAssets();
+    toast(`Mélange « ${sel.value} » chargé` + (missing ? ` (${missing} modèle(s) introuvable(s))` : ''));
+  };
+  row.append(sel);
+  panelBody.append(row);
+  const acts = document.createElement('div');
+  acts.className = 'row';
+  const nameInp = document.createElement('input');
+  nameInp.type = 'text'; nameInp.placeholder = 'Nom du mélange';
+  nameInp.onkeydown = (ev) => ev.stopPropagation();
+  acts.append(nameInp, btn('Enregistrer', () => {
+    if (!placeSet().length) return toast('Coche d\'abord des modèles');
+    const name = (nameInp.value || sel.value || '').trim();
+    if (!name) return toast('Donne un nom au mélange');
+    const { set, rot, nextScale, mode, erase, ...settings } = P;
+    all[name] = { models: placeSet().map((id) => objects.entry(id).tbName || objects.entry(id).name), settings };
+    try { localStorage.setItem(PRESET_KEY, JSON.stringify(all)); toast(`Mélange « ${name} » enregistré`); } catch { toast('Enregistrement impossible'); }
+    renderPanel();
+  }, 'small'));
+  if (names.length) acts.append(btn('Supprimer', () => {
+    if (!sel.value || !confirmBox(`Supprimer le mélange « ${sel.value} » ?`)) return;
+    delete all[sel.value];
+    try { localStorage.setItem(PRESET_KEY, JSON.stringify(all)); } catch { /* stockage indisponible */ }
+    renderPanel();
+  }, 'small danger'));
+  panelBody.append(acts);
 }
 
 function libraryTools() {
@@ -1332,13 +1526,23 @@ const a3Observer = new IntersectionObserver((ents) => {
   a3Pump();
 }, { root: asGrid, rootMargin: '150px' });
 
-async function useA3Model(m) {
+function toggleMarked(id) {
+  const P = toolSettings.place;
+  if (P.set.includes(id)) P.set = P.set.filter((x) => x !== id); else P.set.push(id);
+  P.mode = 'brush';
+  if (state.tool !== 'place') setTool('place'); else { renderPanel(); renderAssets(); }
+}
+
+async function useA3Model(m, mark = false) {
   let e = objects.library.find((x) => x.p3d === m.key) || objects.library.find((x) => !x.modelData && (x.tbName || '').toLowerCase() === m.name.toLowerCase());
   if (!e) {
     e = await objects.addLibraryEntry({ id: 'a3_' + Date.now().toString(36) + Math.floor(Math.random() * 1e4), name: m.name, tbName: m.name, cat: guessCategory(m.key), p3d: m.key });
     if (e._missing) alertDialog('Modèle illisible', `TerraForge n'a pas réussi à lire <b>${esc(m.name)}</b>, il est donc affiché sous forme de cube (il sera quand même exporté sous son nom).<br><br>Raison technique : <code>${esc(a3Errors.get(m.key) || 'inconnue')}</code><br><span class="note">Chemin : ${esc(m.key)}</span>`);
   }
+  if (mark) return toggleMarked(e.id);
   toolSettings.placeLib = e.id;
+  if (toolSettings.place.mode === 'brush' && !toolSettings.place.set.includes(e.id)) toolSettings.place.set.push(e.id);
+  nextPlacement();
   setTool('place');
 }
 
@@ -1371,7 +1575,9 @@ function renderAssets() {
       if (a3Thumbs.get(m.key) === '') card.classList.add('bad');
       const img = card.querySelector('img');
       if (!a3Thumbs.has(m.key)) { img.dataset.key = m.key; a3Observer.observe(img); }
-      card.onclick = () => useA3Model(m);
+      const le = objects.library.find((x) => x.p3d === m.key);
+      if (le && toolSettings.place.set.includes(le.id)) card.classList.add('marked');
+      card.onclick = (ev) => useA3Model(m, ev.ctrlKey || ev.metaKey);
       asGrid.append(card);
     }
     return;
@@ -1398,10 +1604,16 @@ function renderAssets() {
   }
   for (const e of list) {
     const card = document.createElement('div');
-    card.className = 'as-card' + (state.tool === 'place' && e.id === toolSettings.placeLib ? ' active' : '') + (e.p3d && !e._missing ? ' real' : '');
+    card.className = 'as-card' + (state.tool === 'place' && e.id === toolSettings.placeLib ? ' active' : '') + (e.p3d && !e._missing ? ' real' : '') + (toolSettings.place.set.includes(e.id) ? ' marked' : '');
     card.title = `${e.name}\n${e.tbName || ''}` + (e.p3d && !e._missing ? '\nVrai modèle Arma 3' : e._missing ? '\nModèle Arma 3 non trouvé : redonne la source avec « Modèles Arma 3 »' : '\nForme simplifiée');
     card.innerHTML = `<img alt="" loading="lazy" src="${thumbnail(objects, e.id)}"><div class="nm">${esc(e.name)}</div><div class="tb">${esc(e.tbName || '')}</div>`;
-    card.onclick = () => { toolSettings.placeLib = e.id; setTool('place'); };
+    card.onclick = (ev) => {
+      if (ev.ctrlKey || ev.metaKey) return toggleMarked(e.id);
+      toolSettings.placeLib = e.id;
+      if (toolSettings.place.mode === 'brush' && !toolSettings.place.set.includes(e.id)) toolSettings.place.set.push(e.id);
+      nextPlacement();
+      setTool('place');
+    };
     asGrid.append(card);
   }
 }
@@ -2479,7 +2691,7 @@ const mcpApi = {
   // Exécute du JavaScript dans l'éditeur (diagnostic). `code` est le corps d'une fonction asynchrone.
   async js(a = {}) {
     const fn = new (Object.getPrototypeOf(async function () {}).constructor)('tf', String(a.code || ''));
-    const out = await fn({ state, terrain, objects, roads, a3, camera, controls, api: mcpApi, geo: window.__tfGeo });
+    const out = await fn({ state, terrain, objects, roads, a3, camera, controls, api: mcpApi, geo: window.__tfGeo, ui: { setTool, renderPanel, renderAssets, toolSettings } });
     return { resultat: out === undefined ? null : out };
   },
 };
