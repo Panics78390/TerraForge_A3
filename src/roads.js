@@ -249,29 +249,130 @@ export class RoadManager {
     this.scene.add(this.draftLine);
   }
 
-  // Aplanit le terrain sous les routes (profil en long lissé + accotements adoucis).
-  flattenUnder(roadList = this.roads, shoulder = 6) {
-    const T = this.terrain;
+  // Nivelle le terrain sous les routes pour qu'elles soient praticables : profil en long
+  // lissé, chaussée sans dévers, accotements raccordés en douceur. Toutes les routes sont
+  // traitées ensemble (moyenne pondérée par cellule), les carrefours restent donc continus.
+  // Les ponts ne touchent pas au sol qu'ils enjambent ; leurs culées sont mises à niveau.
+  flattenUnder(roadList = this.roads, shoulder = 5, passes = 2) {
+    const T = this.terrain, N = T.N, c = T.cell, H = T.heights;
+    const step = Math.max(1, c * 0.5);
+    const win = Math.max(2, Math.round(24 / step));
+    for (let pass = 0; pass < passes; pass++) {
+      const sum = new Float32Array(N * N), wsum = new Float32Array(N * N), wmax = new Float32Array(N * N);
+      for (const road of roadList) {
+        if (road.bridge || road.points.length < 2) continue;
+        const pts = this.sample(road, step);
+        const raw = pts.map((p) => T.heightAt(p.x, p.z));
+        // moyenne glissante par sommes cumulées
+        const cum = new Float64Array(raw.length + 1);
+        for (let k = 0; k < raw.length; k++) cum[k + 1] = cum[k] + raw[k];
+        const core = this.type(road.type).width / 2 + c * 0.75, R = core + shoulder;
+        for (let k = 0; k < pts.length; k++) {
+          const lo = Math.max(0, k - win), hi = Math.min(raw.length - 1, k + win);
+          const target = (cum[hi + 1] - cum[lo]) / (hi - lo + 1);
+          const px = pts[k].x, pz = pts[k].z;
+          const i0 = Math.max(0, Math.floor((px - R) / c)), i1 = Math.min(N - 1, Math.ceil((px + R) / c));
+          const j0 = Math.max(0, Math.floor((pz - R) / c)), j1 = Math.min(N - 1, Math.ceil((pz + R) / c));
+          for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+            const d = Math.hypot(i * c - px, j * c - pz);
+            if (d >= R) continue;
+            let w = d <= core ? 1 : 1 - (d - core) / shoulder;
+            w = w * w * (3 - 2 * w);
+            const q = j * N + i;
+            sum[q] += target * w * w; wsum[q] += w * w;
+            if (w > wmax[q]) wmax[q] = w;
+          }
+        }
+      }
+      for (let q = 0; q < N * N; q++) if (wsum[q] > 0) H[q] += (sum[q] / wsum[q] - H[q]) * wmax[q];
+    }
+    // Culées : le sol derrière chaque extrémité de pont est amené à la hauteur du tablier.
     for (const road of roadList) {
-      if (road.bridge) continue; // un pont ne modifie pas le sol qu'il enjambe
-      const t = this.type(road.type);
-      const pts = this.sample(road, T.cell * 0.5);
-      // Profil en long : altitude du sol lissée par moyenne glissante.
-      const raw = pts.map((p) => T.heightAt(p.x, p.z));
-      const win = Math.max(2, Math.round(40 / (T.cell * 0.5)));
-      const prof = raw.map((_, k) => {
-        let s = 0, n = 0;
-        for (let m = Math.max(0, k - win); m <= Math.min(raw.length - 1, k + win); m++) { s += raw[m]; n++; }
-        return s / n;
-      });
-      const hw = t.width / 2, R = hw + shoulder;
-      pts.forEach((p, k) => {
-        T.applyBrush(p.x, p.z, R, 0, (h, _w, i, j) => {
-          const d = Math.hypot(i * T.cell - p.x, j * T.cell - p.z);
-          const a = d <= hw ? 1 : 1 - (d - hw) / shoulder;
-          return h + (prof[k] - h) * Math.max(0, a) * 0.6;
-        });
-      });
+      if (!road.bridge || road.points.length < 2) continue;
+      const dk = this.deck(road), p = road.points;
+      const r = Math.min(this.type(road.type).width / 2 + c + 2, Math.max(c, dk.L / 4));
+      const fix = (a, b, h) => {
+        const dx = a[0] - b[0], dz = a[1] - b[1], l = Math.hypot(dx, dz) || 1;
+        const cx = a[0] + (dx / l) * r * 0.7, cz = a[1] + (dz / l) * r * 0.7;
+        const i0 = Math.max(0, Math.floor((cx - r) / c)), i1 = Math.min(N - 1, Math.ceil((cx + r) / c));
+        const j0 = Math.max(0, Math.floor((cz - r) / c)), j1 = Math.min(N - 1, Math.ceil((cz + r) / c));
+        for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+          const d = Math.hypot(i * c - cx, j * c - cz) / r;
+          if (d >= 1) continue;
+          const w = Math.min(1, (1 - d) * 2.5), q = j * N + i;
+          if (H[q] < h) H[q] += (h - H[q]) * w;
+        }
+      };
+      fix(p[0], p[1], dk.h0);
+      fix(p[p.length - 1], p[p.length - 2], dk.h1);
+    }
+    // Hauteur libre : là où une route passe sous un pont, on creuse sa chaussée en pente
+    // douce jusqu'à laisser `clearance` mètres sous le tablier (épaisseur du pont comprise).
+    const clearance = 6.2;
+    const drop = new Map();
+    for (const br of roadList) {
+      if (!br.bridge || br.points.length < 2) continue;
+      const dk = this.deck(br), bp = br.points;
+      let bx0 = Infinity, bx1 = -Infinity, bz0 = Infinity, bz1 = -Infinity;
+      for (const [x, z] of bp) { bx0 = Math.min(bx0, x); bx1 = Math.max(bx1, x); bz0 = Math.min(bz0, z); bz1 = Math.max(bz1, z); }
+      for (const road of roadList) {
+        if (road.bridge || road.points.length < 2) continue;
+        const rp = road.points;
+        let run = 0;
+        for (let k = 1; k < rp.length; k++) {
+          const [ax, az] = rp[k - 1], [cx, cz] = rp[k], sl = Math.hypot(cx - ax, cz - az);
+          if (Math.max(ax, cx) >= bx0 && Math.min(ax, cx) <= bx1 && Math.max(az, cz) >= bz0 && Math.min(az, cz) <= bz1) {
+            let brun = 0;
+            for (let m = 1; m < bp.length; m++) {
+              const [ex, ez] = bp[m - 1], [fx, fz] = bp[m], bl = Math.hypot(fx - ex, fz - ez);
+              const den = (cx - ax) * (fz - ez) - (cz - az) * (fx - ex);
+              if (Math.abs(den) > 1e-9) {
+                const u = ((ex - ax) * (fz - ez) - (ez - az) * (fx - ex)) / den;
+                const v = ((ex - ax) * (cz - az) - (ez - az) * (cx - ax)) / den;
+                // croisement franc, pas un raccord au bout du pont
+                if (u >= 0 && u <= 1 && v >= 0 && v <= 1 && brun + v * bl > 3 && brun + v * bl < dk.L - 3) {
+                  const x = ax + (cx - ax) * u, z = az + (cz - az) * u;
+                  const excess = T.heightAt(x, z) - (dk.h(brun + v * bl) - clearance);
+                  if (excess > 0.05) this.dig(road, run + u * sl, excess, shoulder, drop);
+                }
+              }
+              brun += bl;
+            }
+          }
+          run += sl;
+        }
+      }
+    }
+    for (const [q, d] of drop) H[q] -= d;
+    T.updateHeights(0, 0, N - 1, N - 1);
+  }
+
+  // Prépare un creusement de `depth` mètres sous la route à la distance s0 de son début,
+  // raccordé en pente douce de part et d'autre (résultat cumulé dans `drop` : cellule -> m).
+  dig(road, s0, depth, shoulder, drop) {
+    const T = this.terrain, N = T.N, c = T.cell;
+    const step = Math.max(1, c * 0.5), D = Math.max(40, depth * 14);
+    const core = this.type(road.type).width / 2 + c * 0.75, R = core + shoulder;
+    const pts = this.sample(road, step);
+    let s = 0;
+    for (let k = 0; k < pts.length; k++) {
+      if (k > 0) s += Math.hypot(pts[k].x - pts[k - 1].x, pts[k].z - pts[k - 1].z);
+      const far = Math.abs(s - s0);
+      if (far >= D) continue;
+      // plat sur 10 m sous le pont, puis rampe adoucie
+      let a = far <= 10 ? 1 : 1 - (far - 10) / (D - 10);
+      a = a * a * (3 - 2 * a);
+      const px = pts[k].x, pz = pts[k].z;
+      const i0 = Math.max(0, Math.floor((px - R) / c)), i1 = Math.min(N - 1, Math.ceil((px + R) / c));
+      const j0 = Math.max(0, Math.floor((pz - R) / c)), j1 = Math.min(N - 1, Math.ceil((pz + R) / c));
+      for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+        const d = Math.hypot(i * c - px, j * c - pz);
+        if (d >= R) continue;
+        let w = d <= core ? 1 : 1 - (d - core) / shoulder;
+        w = w * w * (3 - 2 * w);
+        const q = j * N + i, v = depth * a * w;
+        if (v > (drop.get(q) || 0)) drop.set(q, v);
+      }
     }
   }
 }

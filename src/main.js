@@ -990,7 +990,7 @@ function renderPanel() {
         roads.flattenUnder();
         objects.refreshHeights();
         roads.rebuild();
-        toast('Terrain nivelé sous les routes');
+        toast('Terrain nivelé sous les routes, passages sous les ponts dégagés');
       }));
       break;
     }
@@ -1872,6 +1872,8 @@ async function buildGeoMap(cfg, heights, osm, sat = null) {
   }
   setBusy('Construction de la carte…');
   await tick();
+  // Sol nivelé sous les routes (praticables en véhicule), avant de poser quoi que ce soit.
+  if (heights && osm.roads.length) roads.flattenUnder(osm.roads);
   // Bâtiments
   const placed = placeBuildings(osm, geoIds);
   for (const p of placed.list) list.push(p);
