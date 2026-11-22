@@ -249,43 +249,15 @@ export class RoadManager {
     this.scene.add(this.draftLine);
   }
 
-  // Nivelle le terrain sous les routes pour qu'elles soient praticables : profil en long
-  // lissé, chaussée sans dévers, accotements raccordés en douceur. Toutes les routes sont
-  // traitées ensemble (moyenne pondérée par cellule), les carrefours restent donc continus.
-  // Les ponts ne touchent pas au sol qu'ils enjambent ; leurs culées sont mises à niveau.
+  // Nivelle le terrain sous les routes pour qu'elles soient praticables. Tout le réseau
+  // est lissé d'un seul tenant (les routes qui se rejoignent partagent leurs points, donc
+  // pas de marche aux carrefours), puis le sol est remodelé : chaussée sans dévers,
+  // accotements raccordés en douceur. Une route marquée `over` (pont non posé) est reliée
+  // aux routes qu'elle croise : le croisement devient un carrefour à niveau.
+  // Les ponts posés (`bridge`) ne touchent pas au sol qu'ils enjambent.
   flattenUnder(roadList = this.roads, shoulder = 5, passes = 2) {
     const T = this.terrain, N = T.N, c = T.cell, H = T.heights;
-    const step = Math.max(1, c * 0.5);
-    const win = Math.max(2, Math.round(24 / step));
-    for (let pass = 0; pass < passes; pass++) {
-      const sum = new Float32Array(N * N), wsum = new Float32Array(N * N), wmax = new Float32Array(N * N);
-      for (const road of roadList) {
-        if (road.bridge || road.points.length < 2) continue;
-        const pts = this.sample(road, step);
-        const raw = pts.map((p) => T.heightAt(p.x, p.z));
-        // moyenne glissante par sommes cumulées
-        const cum = new Float64Array(raw.length + 1);
-        for (let k = 0; k < raw.length; k++) cum[k + 1] = cum[k] + raw[k];
-        const core = this.type(road.type).width / 2 + c * 0.75, R = core + shoulder;
-        for (let k = 0; k < pts.length; k++) {
-          const lo = Math.max(0, k - win), hi = Math.min(raw.length - 1, k + win);
-          const target = (cum[hi + 1] - cum[lo]) / (hi - lo + 1);
-          const px = pts[k].x, pz = pts[k].z;
-          const i0 = Math.max(0, Math.floor((px - R) / c)), i1 = Math.min(N - 1, Math.ceil((px + R) / c));
-          const j0 = Math.max(0, Math.floor((pz - R) / c)), j1 = Math.min(N - 1, Math.ceil((pz + R) / c));
-          for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
-            const d = Math.hypot(i * c - px, j * c - pz);
-            if (d >= R) continue;
-            let w = d <= core ? 1 : 1 - (d - core) / shoulder;
-            w = w * w * (3 - 2 * w);
-            const q = j * N + i;
-            sum[q] += target * w * w; wsum[q] += w * w;
-            if (w > wmax[q]) wmax[q] = w;
-          }
-        }
-      }
-      for (let q = 0; q < N * N; q++) if (wsum[q] > 0) H[q] += (sum[q] / wsum[q] - H[q]) * wmax[q];
-    }
+    for (let pass = 0; pass < passes; pass++) this.grade(roadList, shoulder);
     // Culées : le sol derrière chaque extrémité de pont est amené à la hauteur du tablier.
     for (const road of roadList) {
       if (!road.bridge || road.points.length < 2) continue;
@@ -345,6 +317,113 @@ export class RoadManager {
     }
     for (const [q, d] of drop) H[q] -= d;
     T.updateHeights(0, 0, N - 1, N - 1);
+  }
+
+  // Une passe de nivellement (voir flattenUnder). lambda règle la force du lissage :
+  // la longueur lissée vaut environ step × √lambda (40 m par défaut).
+  grade(roadList, shoulder = 5, lambda = 100, iters = 150, step = 4) {
+    const T = this.terrain, N = T.N, c = T.cell, H = T.heights;
+    const X = [], Z = [], G = [], ids = new Map(), ways = [], E0 = [], E1 = [], EW = [];
+    const key = (p) => Math.round(p[0] * 20) + ',' + Math.round(p[1] * 20);
+    const node = (x, z, k) => {
+      if (k !== null) { const id = ids.get(k); if (id !== undefined) return id; }
+      const id = X.length;
+      X.push(x); Z.push(z); G.push(T.heightAt(x, z));
+      if (k !== null) ids.set(k, id);
+      return id;
+    };
+    const edge = (a, b, d, w = Math.min(4, step / Math.max(d, 0.5))) => { if (a !== b) { E0.push(a); E1.push(b); EW.push(lambda * w); } };
+    for (const road of roadList) {
+      if (road.bridge || road.points.length < 2) continue;
+      const seq = [];
+      if (road.raw) {
+        let prev = node(road.points[0][0], road.points[0][1], key(road.points[0]));
+        seq.push(prev);
+        for (let k = 1; k < road.points.length; k++) {
+          const [ax, az] = road.points[k - 1], [bx, bz] = road.points[k];
+          const l = Math.hypot(bx - ax, bz - az), n = Math.max(1, Math.ceil(l / step));
+          for (let m = 1; m <= n; m++) {
+            const id = m === n ? node(bx, bz, key(road.points[k])) : node(ax + ((bx - ax) * m) / n, az + ((bz - az) * m) / n, null);
+            edge(prev, id, l / n);
+            prev = id; seq.push(id);
+          }
+        }
+      } else {
+        const p = this.sample(road, step);
+        let prev = -1;
+        p.forEach((q, i) => {
+          const id = node(q.x, q.z, i === 0 || i === p.length - 1 ? key([q.x, q.z]) : null);
+          if (prev >= 0) edge(prev, id, step);
+          prev = id; seq.push(id);
+        });
+      }
+      ways.push({ road, seq });
+    }
+    // Ponts non posés : on lie la route du dessus à celles qu'elle croise.
+    for (const A of ways) {
+      if (!A.road.over) continue;
+      const pa = A.road.points;
+      let x0 = Infinity, x1 = -Infinity, z0 = Infinity, z1 = -Infinity;
+      for (const [x, z] of pa) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
+      for (const B of ways) {
+        if (B === A || B.road.over) continue;
+        const pb = B.road.points;
+        let hit = null;
+        for (let k = 1; k < pb.length && !hit; k++) {
+          const [ux, uz] = pb[k - 1], [vx, vz] = pb[k];
+          if (Math.max(ux, vx) < x0 || Math.min(ux, vx) > x1 || Math.max(uz, vz) < z0 || Math.min(uz, vz) > z1) continue;
+          for (let m = 1; m < pa.length; m++) {
+            const [ex, ez] = pa[m - 1], [fx, fz] = pa[m];
+            const den = (vx - ux) * (fz - ez) - (vz - uz) * (fx - ex);
+            if (Math.abs(den) < 1e-9) continue;
+            const u = ((ex - ux) * (fz - ez) - (ez - uz) * (fx - ex)) / den, v = ((ex - ux) * (vz - uz) - (ez - uz) * (vx - ux)) / den;
+            if (u > 0 && u < 1 && v > 0 && v < 1) { hit = [ux + (vx - ux) * u, uz + (vz - uz) * u]; break; }
+          }
+        }
+        if (!hit) continue;
+        const nearest = (seq) => { let b = -1, bd = Infinity; for (const id of seq) { const d = Math.hypot(X[id] - hit[0], Z[id] - hit[1]); if (d < bd) { bd = d; b = id; } } return b; };
+        edge(nearest(A.seq), nearest(B.seq), step, 8);
+      }
+    }
+    // Lissage : chaque point reste proche du sol d'origine tout en s'alignant sur ses voisins.
+    const n = X.length, h = Float64Array.from(G), den = new Float64Array(n).fill(1), start = new Int32Array(n + 1);
+    for (let e = 0; e < E0.length; e++) { start[E0[e] + 1]++; start[E1[e] + 1]++; den[E0[e]] += EW[e]; den[E1[e]] += EW[e]; }
+    for (let i = 0; i < n; i++) start[i + 1] += start[i];
+    const fill = start.slice(0, n), AJ = new Int32Array(E0.length * 2), AW = new Float32Array(E0.length * 2);
+    for (let e = 0; e < E0.length; e++) {
+      AJ[fill[E0[e]]] = E1[e]; AW[fill[E0[e]]++] = EW[e];
+      AJ[fill[E1[e]]] = E0[e]; AW[fill[E1[e]]++] = EW[e];
+    }
+    const relax = (i) => { let s = G[i]; for (let q = start[i]; q < start[i + 1]; q++) s += AW[q] * h[AJ[q]]; h[i] = s / den[i]; };
+    for (let it = 0; it < iters; it++) {
+      for (let i = 0; i < n; i++) relax(i);
+      for (let i = n - 1; i >= 0; i--) relax(i);
+    }
+    // Remodelage du sol : moyenne pondérée par cellule des altitudes voulues.
+    const sum = new Float32Array(N * N), wsum = new Float32Array(N * N), wmax = new Float32Array(N * N);
+    for (const { road, seq } of ways) {
+      const core = this.type(road.type).width / 2 + c * 0.75, R = core + shoulder;
+      for (let k = 0; k < seq.length; k++) {
+        const a = seq[Math.max(0, k - 1)], b = seq[k];
+        const steps = k === 0 ? 1 : Math.max(1, Math.ceil(Math.hypot(X[b] - X[a], Z[b] - Z[a]) / (c * 0.5)));
+        for (let m = 1; m <= steps; m++) {
+          const t = k === 0 ? 1 : m / steps;
+          const px = X[a] + (X[b] - X[a]) * t, pz = Z[a] + (Z[b] - Z[a]) * t, target = h[a] + (h[b] - h[a]) * t;
+          const i0 = Math.max(0, Math.floor((px - R) / c)), i1 = Math.min(N - 1, Math.ceil((px + R) / c));
+          const j0 = Math.max(0, Math.floor((pz - R) / c)), j1 = Math.min(N - 1, Math.ceil((pz + R) / c));
+          for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+            const d = Math.hypot(i * c - px, j * c - pz);
+            if (d >= R) continue;
+            let w = d <= core ? 1 : 1 - (d - core) / shoulder;
+            w = w * w * (3 - 2 * w);
+            const q = j * N + i, ww = w * w * w * w;
+            sum[q] += target * ww; wsum[q] += ww;
+            if (w > wmax[q]) wmax[q] = w;
+          }
+        }
+      }
+    }
+    for (let q = 0; q < N * N; q++) if (wsum[q] > 0) H[q] += (sum[q] / wsum[q] - H[q]) * wmax[q];
   }
 
   // Prépare un creusement de `depth` mètres sous la route à la distance s0 de son début,

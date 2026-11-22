@@ -641,8 +641,10 @@ export function parseOSM(json, cfg) {
         // Découpe aux bords de la carte.
         let seg = [];
         // Ponts désactivés par défaut (cfg.bridges) : la route suit alors le sol nivelé.
-        const bridge = !!cfg.bridges && !!t.bridge && t.bridge !== 'no';
-        const flush = () => { if (seg.length >= 2) roads.push({ type, raw: true, points: seg, ...(bridge ? { bridge: true } : {}) }); seg = []; };
+        // Sans pont posé, la route est marquée `over` : elle rejoindra à niveau celles qu'elle croise.
+        const isBridge = !!t.bridge && t.bridge !== 'no';
+        const flag = isBridge ? (cfg.bridges ? { bridge: true } : { over: true }) : {};
+        const flush = () => { if (seg.length >= 2) roads.push({ type, raw: true, points: seg, ...flag }); seg = []; };
         for (const p of pts) { if (inside(p)) seg.push([round(p[0]), round(p[1])]); else flush(); }
         flush();
       } else if (t.building && cfg.buildings) {
