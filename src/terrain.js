@@ -24,6 +24,9 @@ export class Terrain {
     this.stride = Math.max(1, Math.ceil(gridSize / 1024)); // maillage d'affichage allégé
     this.M = Math.ceil((gridSize - 1) / this.stride) + 1;
     this.heights = new Float32Array(gridSize * gridSize);
+    this.base = null;          // relief d'origine (pris avant la première retouche), pour l'outil Restaurer
+    this.brushShape = this.brushShape || 'round'; // 'round' ou 'square'
+    this.protect = this.protect || null;          // (x, z) -> true : point que les pinceaux ne touchent pas
     this.maskRes = maskRes;
     this.surf = new Uint8Array(maskRes * maskRes); // index de surface par pixel
 
@@ -154,10 +157,12 @@ export class Terrain {
     const i0 = Math.max(0, Math.floor((x - r) / c)), i1 = Math.min(N - 1, Math.ceil((x + r) / c));
     const j0 = Math.max(0, Math.floor((z - r) / c)), j1 = Math.min(N - 1, Math.ceil((z + r) / c));
     if (i0 > i1 || j0 > j1) return;
+    const sq = this.brushShape === 'square';
     for (let j = j0; j <= j1; j++) {
       for (let i = i0; i <= i1; i++) {
-        const d = Math.hypot(i * c - x, j * c - z) / r;
+        const d = (sq ? Math.max(Math.abs(i * c - x), Math.abs(j * c - z)) : Math.hypot(i * c - x, j * c - z)) / r;
         if (d > 1) continue;
+        if (this.protect && this.protect(i * c, j * c)) continue;
         const w = brushWeight(d, falloff);
         const k = j * N + i;
         this.heights[k] = fn(this.heights[k], w, i, j);
@@ -171,6 +176,7 @@ export class Terrain {
     const i0 = Math.max(0, Math.floor((x - r) / c)), i1 = Math.min(N - 1, Math.ceil((x + r) / c));
     const j0 = Math.max(0, Math.floor((z - r) / c)), j1 = Math.min(N - 1, Math.ceil((z + r) / c));
     if (i0 > i1 || j0 > j1) return;
+    const sq = this.brushShape === 'square';
     const w = i1 - i0 + 1;
     const tmp = new Float32Array(w * (j1 - j0 + 1));
     for (let j = j0; j <= j1; j++)
@@ -181,8 +187,9 @@ export class Terrain {
       }
     for (let j = j0; j <= j1; j++)
       for (let i = i0; i <= i1; i++) {
-        const d = Math.hypot(i * c - x, j * c - z) / r;
+        const d = (sq ? Math.max(Math.abs(i * c - x), Math.abs(j * c - z)) : Math.hypot(i * c - x, j * c - z)) / r;
         if (d > 1) continue;
+        if (this.protect && this.protect(i * c, j * c)) continue;
         const k = j * N + i;
         const a = brushWeight(d, falloff) * strength;
         this.heights[k] += (tmp[(j - j0) * w + (i - i0)] - this.heights[k]) * a;
@@ -191,12 +198,14 @@ export class Terrain {
   }
 
   flatAll(h = 10) {
+    this.base = null;
     this.heights.fill(h);
     this.updateHeights(0, 0, this.N - 1, this.N - 1);
   }
 
   // Ré-échantillonne une grille source (w x hgt) dans la grille du terrain.
   loadHeightGrid(src, w, hgt) {
+    this.base = null;
     const N = this.N;
     for (let j = 0; j < N; j++)
       for (let i = 0; i < N; i++) {

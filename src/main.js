@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { Terrain } from './terrain.js';
+import { Terrain, brushWeight } from './terrain.js';
 import { DEFAULT_SURFACES } from './surfaces.js';
 import { ObjectManager, DEFAULT_LIBRARY, CATEGORIES, thumbnail, clearThumb, renderThumb } from './objects.js';
 import { A3Source } from './a3source.js';
@@ -71,7 +71,7 @@ fill.position.set(4000, 1800, 2800);
 scene.add(fill);
 
 const state = {
-  settings: { radius: 60, strength: 0.5, falloff: 0.6, name: 'MonTerrain', author: '', game: 'arma3' },
+  settings: { radius: 60, strength: 0.5, falloff: 0.6, shape: 'round', protectRoads: false, protectMargin: 2, name: 'MonTerrain', author: '', game: 'arma3' },
   tool: 'raise',
 };
 
@@ -147,6 +147,8 @@ function snapshot(kind) {
   return s;
 }
 function pushUndo(kind) {
+  // Avant la première retouche du relief, on garde le relief d'origine (outil Restaurer).
+  if (kind.includes('h') && (!terrain.base || terrain.base.length !== terrain.heights.length)) terrain.base = terrain.heights.slice();
   undoStack.push(snapshot(kind));
   // Limite la mémoire : une grille 2048 pèse 16 Mo par étape d'annulation.
   const maxUndo = Math.max(3, Math.min(30, Math.floor(250e6 / (terrain.heights.byteLength + terrain.surf.byteLength))));
@@ -184,6 +186,7 @@ const TOOLS = [
 
 const toolSettings = {
   flattenLevel: 20,
+  reliefMode: 'raise',  // sous-outil de Relief : 'raise', 'drag', 'ramp', 'restore'
   flattenFixed: false, // false : le niveau est pris sous le curseur à chaque clic
   waterDepth: 4,
   surface: 0,
@@ -290,6 +293,11 @@ const raycaster = new THREE.Raycaster();
 const mouse = new THREE.Vector2();
 let hover = null;          // point du terrain sous la souris
 let painting = false;
+let grab = null;           // outil Tirer : zone attrapée { x, z, cy, k, snap }
+let ramp = null;           // outil Rampe : point de départ { x, z, h }
+let pointerY = 0;
+let quickTool = null;      // outil tenu au clavier (F : aplanir, L : lisser)
+const RELIEF_TOOLS = ['raise', 'smooth', 'flatten', 'water'];
 let shiftDown = false, ctrlDown = false;
 let dragObj = null;
 let dragRoadPt = false;    // un point de la route sélectionnée est en cours de déplacement
@@ -363,7 +371,9 @@ function updateHover(e) {
 
 renderer.domElement.addEventListener('pointermove', (e) => {
   shiftDown = e.shiftKey; ctrlDown = e.ctrlKey || e.metaKey;
+  pointerY = e.clientY;
   updateHover(e);
+  if (grab) hover = { x: grab.x, y: terrain.heightAt(grab.x, grab.z), z: grab.z }; // le pinceau reste sur la zone tirée
   if (state.tool === 'road' && hover && toolSettings.roadMode === 'draw') roads.updateDraft(hover);
   if (dragRoadPt && hover && roads.selected) {
     const p = roads.selected.points[roads.activePoint];
@@ -378,8 +388,8 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
   if (!hover) return;
   const tool = TOOLS.find((t) => t.id === state.tool);
 
-  if (state.tool === 'flatten' && (e.ctrlKey || e.metaKey)) {
-    // Ctrl+clic : relève l'altitude et la garde comme niveau fixe.
+  if (state.tool === 'flatten' && (e.ctrlKey || e.metaKey || e.altKey)) {
+    // Ctrl+clic ou Alt+clic : relève l'altitude et la garde comme niveau fixe.
     toolSettings.flattenLevel = Math.round(hover.y * 100) / 100;
     toolSettings.flattenFixed = true;
     renderPanel();
@@ -445,6 +455,15 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
     return;
   }
   if (tool?.undo) pushUndo(tool.undo);
+  if (state.tool === 'raise' && !quickTool) {
+    if (toolSettings.reliefMode === 'drag') {
+      // Tirer : on attrape la zone sous le pinceau ; la souris la monte ou la descend.
+      const dist = camera.position.distanceTo(_move.set(hover.x, hover.y, hover.z));
+      grab = { x: hover.x, z: hover.z, cy: e.clientY, k: Math.max(0.02, dist * 0.0016), snap: undoStack[undoStack.length - 1].heights };
+      pointerY = e.clientY;
+    }
+    if (toolSettings.reliefMode === 'ramp') ramp = { x: hover.x, z: hover.z, h: terrain.heightAt(hover.x, hover.z) };
+  }
   painting = true;
   renderer.domElement.setPointerCapture(e.pointerId);
 });
@@ -452,6 +471,8 @@ renderer.domElement.addEventListener('pointerdown', (e) => {
 window.addEventListener('pointerup', () => {
   if (painting) {
     painting = false;
+    if (ramp && hover) applyRamp(ramp, hover);
+    ramp = null; grab = null;
     objects.refreshHeights();
     roads.rebuild();
     updateInfo();
@@ -517,6 +538,11 @@ window.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if ((e.ctrlKey || e.metaKey) && k === 'y') { e.preventDefault(); redo(); return; }
   if ((e.ctrlKey || e.metaKey) && k === 's') { e.preventDefault(); doSave(e.shiftKey); return; }
+  if (!e.ctrlKey && !e.metaKey && !e.altKey && RELIEF_TOOLS.includes(state.tool) && (k === 'f' || k === 'l') && !quickTool && !grab && !ramp) {
+    // Tenir F : aplanir, tenir L : lisser, sans changer d'outil.
+    quickTool = k === 'f' ? 'flatten' : 'smooth';
+    if (quickTool === 'flatten' && !toolSettings.flattenFixed && hover) toolSettings.flattenLevel = Math.round(hover.y * 100) / 100;
+  }
   if (k === '[') { state.settings.radius = Math.max(2, Math.round(state.settings.radius / 1.15)); renderPanel(); }
   if (k === ']') { state.settings.radius = Math.min(2000, Math.round(state.settings.radius * 1.15 + 1)); renderPanel(); }
   if (state.tool === 'road' && toolSettings.roadMode === 'edit') {
@@ -542,7 +568,7 @@ window.addEventListener('keydown', (e) => {
   if (!e.ctrlKey && n >= 1 && n <= TOOLS.length && !e.altKey) setTool(TOOLS[n === 0 ? 9 : n - 1].id);
   if (e.key === '0') setTool(TOOLS[9].id);
 });
-window.addEventListener('keyup', (e) => { shiftDown = e.shiftKey; ctrlDown = e.ctrlKey || e.metaKey; moveKeys.delete(e.code); });
+window.addEventListener('keyup', (e) => { if (['f', 'l'].includes(e.key.toLowerCase())) quickTool = null; shiftDown = e.shiftKey; ctrlDown = e.ctrlKey || e.metaKey; moveKeys.delete(e.code); });
 window.addEventListener('blur', () => moveKeys.clear());
 
 // Déplacement de la vue au clavier : ZQSD (ou WASD sur un clavier QWERTY) et les flèches.
@@ -631,6 +657,15 @@ renderer.domElement.addEventListener('wheel', (e) => {
     clearTimeout(wheelPanel); wheelPanel = setTimeout(renderPanel, 250);
     return;
   }
+  if (RELIEF_TOOLS.includes(state.tool) && (e.ctrlKey || e.metaKey || e.altKey)) {
+    // Ctrl+molette : rayon. Ctrl+Maj+molette : douceur du bord. Alt+molette : force.
+    const s = state.settings, dir = -Math.sign(e.deltaY);
+    if (e.altKey) s.strength = Math.max(0.02, Math.min(1, Math.round((s.strength + dir * 0.05) * 100) / 100));
+    else if (e.shiftKey) s.falloff = Math.max(0, Math.min(1, Math.round((s.falloff + dir * 0.05) * 100) / 100));
+    else s.radius = Math.max(2, Math.min(1000, Math.round(s.radius * (dir > 0 ? 1.12 : 0.89) * 10) / 10));
+    clearTimeout(wheelPanel); wheelPanel = setTimeout(renderPanel, 250);
+    return;
+  }
   if (!controls.enabled) return;
   camera.getWorldDirection(_fwd);
   const alt = Math.max(6, camera.position.y - groundUnderCamera());
@@ -662,11 +697,27 @@ function applyTool(dt) {
   if (!painting || !hover) return;
   const { radius: r, strength: st, falloff: fo } = state.settings;
   const { x, z } = hover;
-  switch (state.tool) {
+  const relief = RELIEF_TOOLS.includes(state.tool);
+  terrain.brushShape = relief && state.settings.shape === 'square' ? 'square' : 'round';
+  terrain.protect = relief ? roadGuard() : null;
+  switch (relief && quickTool ? quickTool : state.tool) {
     case 'raise': {
-      const sign = shiftDown ? -1 : 1;
-      const rate = st * 30 * dt * sign;
-      terrain.applyBrush(x, z, r, fo, (h, w) => h + rate * w);
+      const mode = toolSettings.reliefMode;
+      if (mode === 'drag') {
+        if (!grab) break;
+        // Tirer : la zone repart de son état au clic, décalée de la course de la souris.
+        const d = (grab.cy - pointerY) * grab.k, N = terrain.N, snap = grab.snap;
+        terrain.applyBrush(grab.x, grab.z, r, fo, (_h, w, i, j) => snap[j * N + i] + d * w);
+      } else if (mode === 'ramp') {
+        // rien pendant le glisser : la rampe est tracée au relâchement
+      } else if (mode === 'restore') {
+        const base = terrain.base, N = terrain.N, a = Math.min(1, st * dt * 8);
+        if (base && base.length === terrain.heights.length) terrain.applyBrush(x, z, r, fo, (h, w, i, j) => h + (base[j * N + i] - h) * w * a);
+      } else {
+        const sign = shiftDown ? -1 : 1;
+        const rate = st * 30 * dt * sign;
+        terrain.applyBrush(x, z, r, fo, (h, w) => h + rate * w);
+      }
       break;
     }
     case 'smooth':
@@ -776,10 +827,38 @@ function surfaceIndexAt(x, z) {
   return terrain.surf[Math.max(0, Math.min(R - 1, Math.floor(py))) * R + Math.max(0, Math.min(R - 1, Math.floor(px)))];
 }
 
+// Points que les pinceaux de relief ne touchent pas (option « Protéger les routes »).
+function roadGuard() {
+  const s = state.settings;
+  return s.protectRoads && roads.roads.length ? (px, pz) => roads.nearRoad(px, pz, s.protectMargin || 0) : null;
+}
+
+// Rampe : pente régulière de a (x, z, h) jusqu'à b, de demi-largeur « rayon », bords adoucis.
+function applyRamp(a, b) {
+  const { radius: r, falloff: fo } = state.settings;
+  const dx = b.x - a.x, dz = b.z - a.z, L2 = dx * dx + dz * dz;
+  if (L2 < 1) return;
+  const h1 = terrain.heightAt(b.x, b.z), c = terrain.cell, N = terrain.N, guard = roadGuard();
+  const i0 = Math.max(0, Math.floor((Math.min(a.x, b.x) - r) / c)), i1 = Math.min(N - 1, Math.ceil((Math.max(a.x, b.x) + r) / c));
+  const j0 = Math.max(0, Math.floor((Math.min(a.z, b.z) - r) / c)), j1 = Math.min(N - 1, Math.ceil((Math.max(a.z, b.z) + r) / c));
+  if (i0 > i1 || j0 > j1) return;
+  for (let j = j0; j <= j1; j++)
+    for (let i = i0; i <= i1; i++) {
+      const px = i * c, pz = j * c;
+      const t = Math.max(0, Math.min(1, ((px - a.x) * dx + (pz - a.z) * dz) / L2));
+      const d = Math.hypot(px - (a.x + dx * t), pz - (a.z + dz * t)) / r;
+      if (d > 1 || (guard && guard(px, pz))) continue;
+      const k = j * N + i, w = brushWeight(d, fo);
+      terrain.heights[k] += (a.h + (h1 - a.h) * t - terrain.heights[k]) * w;
+    }
+  terrain.updateHeights(i0, j0, i1, j1);
+}
+
 // Met le sol à plat sous l'emprise d'un modèle, à l'altitude de son centre, bords adoucis.
 function flattenFootprint(id, x, z, rot, scale) {
   const f = footprint(id), hx = f.hx * scale + 0.5, hz = f.hz * scale + 0.5, soft = 4;
   const target = terrain.heightAt(x, z), c = Math.cos(rot), sn = Math.sin(rot);
+  terrain.brushShape = 'round'; terrain.protect = null;
   terrain.applyBrush(x, z, Math.hypot(hx, hz) + soft, 0, (h, _w, i, j) => {
     const dx = i * terrain.cell - x, dz = j * terrain.cell - z;
     const u = Math.abs(dx * c - dz * sn) - hx, v = Math.abs(dx * sn + dz * c) - hz;
@@ -861,10 +940,10 @@ function updateCursor() {
     const t = P.align ? terrainTilt(hover.x, hover.z, P.rot) : { rx: 0, rz: 0 };
     objects.setGhost(ge.id, hover.x, terrain.heightAt(hover.x, hover.z) - (P.sink || 0), hover.z, P.rot, P.nextScale, t.rx, t.rz);
   } else objects.clearGhost();
-  const lineOn = ge && shiftDown && toolSettings.place.last;
+  const lineOn = (ge && shiftDown && toolSettings.place.last) || (ramp && hover);
   lineGuide.visible = !!lineOn;
   if (lineOn) {
-    const a = toolSettings.place.last, G = lineGuide.geometry.attributes.position;
+    const a = ramp || toolSettings.place.last, G = lineGuide.geometry.attributes.position;
     for (let k = 0; k <= 32; k++) { const t = k / 32, x = a.x + (hover.x - a.x) * t, z = a.z + (hover.z - a.z) * t; G.setXYZ(k, x, terrain.heightAt(x, z) + 1.2, z); }
     G.needsUpdate = true; lineGuide.geometry.computeBoundingSphere();
   }
@@ -880,7 +959,7 @@ function updateCursor() {
     for (let k = 0; k <= 64; k++) {
       const a = (k / 64) * Math.PI * 2;
       let cx = Math.cos(a), cz = Math.sin(a);
-      if (brushPlace && toolSettings.place.shape === 'square') { const m = Math.max(Math.abs(cx), Math.abs(cz)); cx /= m; cz /= m; }
+      if (brushPlace ? toolSettings.place.shape === 'square' : RELIEF_TOOLS.includes(state.tool) && state.settings.shape === 'square') { const m = Math.max(Math.abs(cx), Math.abs(cz)); cx /= m; cz /= m; }
       const x = hover.x + cx * rr, z = hover.z + cz * rr;
       P.setXYZ(k, x, terrain.heightAt(x, z) + 1.5, z);
     }
@@ -953,12 +1032,24 @@ function h3(t) { const e = document.createElement('h3'); e.textContent = t; retu
 function note(html) { const e = document.createElement('p'); e.className = 'note'; e.innerHTML = html; return e; }
 function btn(label, fn, cls = '') { const b = document.createElement('button'); b.innerHTML = label; b.onclick = fn; if (cls) b.className = cls; return b; }
 
-function brushControls(withStrength = true, withFalloff = true) {
+function brushControls(withStrength = true, withFalloff = true, relief = false, radiusLabel = null) {
   const s = state.settings;
   panelBody.append(h3('Pinceau'));
-  panelBody.append(slider('Rayon (m)', () => s.radius, (v) => (s.radius = v), 2, 1000, 1));
+  if (relief) {
+    const shp = document.createElement('div'); shp.className = 'seg';
+    for (const [k, lab] of [['round', 'Rond'], ['square', 'Carré']]) {
+      const b = btn(lab, () => { s.shape = k; renderPanel(); }, 'small'); if ((s.shape || 'round') === k) b.classList.add('active'); shp.append(b);
+    }
+    if (!radiusLabel) panelBody.append(shp);
+  }
+  panelBody.append(slider(radiusLabel || (relief && s.shape === 'square' ? 'Demi-côté (m)' : 'Rayon (m)'), () => s.radius, (v) => (s.radius = v), 2, 1000, 1));
   if (withStrength) panelBody.append(slider('Force', () => s.strength, (v) => (s.strength = v), 0.02, 1, 0.01));
   if (withFalloff) panelBody.append(slider('Douceur du bord', () => s.falloff, (v) => (s.falloff = v), 0, 1, 0.05));
+  if (relief) {
+    panelBody.append(checkRow('Protéger les routes', () => s.protectRoads, (v) => { s.protectRoads = v; renderPanel(); }));
+    if (s.protectRoads) panelBody.append(slider('Marge autour des routes (m)', () => s.protectMargin, (v) => (s.protectMargin = v), 0, 30, 0.5));
+    panelBody.append(note('<b>Ctrl+molette</b> : rayon. <b>Ctrl+Maj+molette</b> : douceur du bord. <b>Alt+molette</b> : force. Tenir <b>F</b> : aplanir, tenir <b>L</b> : lisser, sans changer d\'outil. Les objets et les routes suivent le sol.'));
+  }
 }
 
 function libraryList(onPick, activeId, withWeights = false) {
@@ -1003,23 +1094,33 @@ function renderPanel() {
       panelBody.append(checkRow('Fil de fer', () => terrain.mesh.material.wireframe, (v) => (terrain.mesh.material.wireframe = v)));
       break;
     case 'raise':
-      panelBody.append(note('Maintiens le clic gauche pour <b>élever</b> le terrain. Maintiens <b>Maj</b> pour <b>abaisser</b>.'));
-      brushControls();
+    {
+      const seg = document.createElement('div'); seg.className = 'seg';
+      for (const [k, lab] of [['raise', 'Monter'], ['drag', 'Tirer'], ['ramp', 'Rampe'], ['restore', 'Restaurer']]) {
+        const b = btn(lab, () => { toolSettings.reliefMode = k; renderPanel(); }, 'small'); if (toolSettings.reliefMode === k) b.classList.add('active'); seg.append(b);
+      }
+      panelBody.append(seg);
+      const mode = toolSettings.reliefMode;
+      if (mode === 'drag') { panelBody.append(note('<b>Tirer</b> : clique sur une zone, garde le bouton enfoncé et bouge la souris <b>vers le haut ou vers le bas</b> : toute la zone sous le pinceau monte ou descend avec elle.')); brushControls(false, true, true); }
+      else if (mode === 'ramp') { panelBody.append(note('<b>Rampe</b> : clique au point de départ, fais glisser jusqu\'au point d\'arrivée et relâche. Une pente régulière est tracée entre les deux altitudes. Le rayon donne la demi-largeur.')); brushControls(false, true, true, 'Demi-largeur (m)'); }
+      else if (mode === 'restore') { panelBody.append(note('<b>Restaurer</b> : repeint le relief d\'origine (celui d\'avant tes retouches) sous le pinceau.' + (terrain.base ? '' : ' Pour l\'instant le relief n\'a pas encore été retouché.'))); brushControls(true, true, true); }
+      else { panelBody.append(note('Maintiens le clic gauche pour <b>élever</b> le terrain. Maintiens <b>Maj</b> pour <b>abaisser</b>.')); brushControls(true, true, true); }
       break;
+    }
     case 'smooth':
       panelBody.append(note('Adoucit les bosses et les arêtes sous le pinceau.'));
-      brushControls();
+      brushControls(true, true, true);
       break;
     case 'flatten':
       panelBody.append(note('Clique sur le terrain et fais glisser : le sol est mis à plat <b>à l\'altitude de l\'endroit où tu as cliqué</b>. Pour viser une altitude précise, tape-la ci-dessous (ou <b>Ctrl+clic</b> pour la relever sur le terrain).'));
       panelBody.append(checkRow('Niveau fixe', () => toolSettings.flattenFixed, (v) => { toolSettings.flattenFixed = v; renderPanel(); }));
       panelBody.append(numberRow(toolSettings.flattenFixed ? 'Niveau (m)' : 'Dernier niveau (m)', () => toolSettings.flattenLevel, (v) => { if (isFinite(v)) { toolSettings.flattenLevel = v; toolSettings.flattenFixed = true; renderPanel(); } }, 0.1));
-      brushControls();
+      brushControls(true, true, true);
       break;
     case 'water':
       panelBody.append(note('Creuse un plan d\'eau sous le niveau de la mer (0 m). Dans Arma 3, toute zone sous 0 m est de l\'eau : mer, baies, étangs reliés ou non.'));
       panelBody.append(numberRow('Profondeur (m)', () => toolSettings.waterDepth, (v) => (toolSettings.waterDepth = Math.max(0.5, v)), 0.5));
-      brushControls();
+      brushControls(true, true, true);
       panelBody.append(note('Les lacs <i>au-dessus</i> du niveau de la mer ne sont pas gérés nativement par Arma 3 (il faut des objets d\'eau de mods).'));
       break;
     case 'paint': {
